@@ -2,6 +2,8 @@
 from src.preprocessing.docile_loader import TextBlock
 
 def serialize(blocks: list[TextBlock]) -> tuple[str, dict]:
+    # nhận đầu vào là danh sahcs các từ. bọc mõi từ bằng thẻ id. ví dụ [ID_0001] "Tổng" \n [ID_0002] "tiền" \n [ID_0003] "là" \n [ID_0004] "100" \n [ID_0005] "USD".
+    # tra từ điển ngược
     lines = []
     id_map = {}
     for b in blocks:
