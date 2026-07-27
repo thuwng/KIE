@@ -8,6 +8,7 @@ class TextBlock:
     text: str
     bbox: tuple   # (x0, y0, x1, y1) normalized 0-1
     page: int
+    # đại diện cho từ: id, text, bbox, page 
 
 @dataclass
 class GTField:
@@ -15,12 +16,14 @@ class GTField:
     text: str
     bbox: tuple
     page: int
+    # lưu trữ annotation: fieldtype, text, bbox, page
 
 @dataclass
 class Document:
     doc_id: str
     blocks: list[TextBlock]
     gt_fields: list[GTField]
+    # tài liệu hoàn chỉnh
 
 
 def load_ocr_blocks(ocr_path: str) -> list[TextBlock]:
