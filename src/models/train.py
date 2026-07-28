@@ -10,7 +10,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from src.models.dataset import build_dataset, make_collate_fn
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
-MAX_SEQ_LENGTH = 2048
+MAX_SEQ_LENGTH = 4096
 
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -48,6 +48,7 @@ val_dataset = build_dataset("data/processed/val.jsonl", tokenizer, MAX_SEQ_LENGT
 training_args = TrainingArguments(
     output_dir="outputs/lora_v0",
     per_device_train_batch_size=1,
+    per_device_eval_batch_size=1, 
     gradient_accumulation_steps=16,
     #group_by_length=True,
     num_train_epochs=2,
