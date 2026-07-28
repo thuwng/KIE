@@ -1,4 +1,7 @@
 # train.py
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # đặt TRƯỚC khi import torch
+
 import torch
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
@@ -29,6 +32,8 @@ lora_config = LoraConfig(
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 )
 model = get_peft_model(model, lora_config)
+model.gradient_checkpointing_enable()      # THÊM — giảm mạnh memory activation, đánh đổi ~20-30% tốc độ
+model.config.use_cache = False  
 model.print_trainable_parameters()
 
 train_dataset = build_dataset("data/processed/train.jsonl", tokenizer, MAX_SEQ_LENGTH)
@@ -37,8 +42,8 @@ val_dataset = build_dataset("data/processed/val.jsonl", tokenizer, MAX_SEQ_LENGT
 training_args = TrainingArguments(
     output_dir="outputs/lora_v0",
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=8,
-    gradient_checkpointing=True,
+    gradient_accumulation_steps=16,
+    group_by_length=True,
     num_train_epochs=2,
     learning_rate=2e-4,
     warmup_steps=20,
