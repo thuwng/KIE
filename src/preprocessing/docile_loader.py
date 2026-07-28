@@ -50,6 +50,7 @@ def load_ocr_blocks(ocr_path: str) -> list[TextBlock]:
 def load_gt_fields(ann_path: str) -> list[GTField]:
     with open(ann_path) as f:
         ann = json.load(f)
+    field_extractions = ann.get("field_extractions", [])
     return [
         GTField(
             fieldtype=fe["fieldtype"],
