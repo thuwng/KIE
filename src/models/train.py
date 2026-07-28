@@ -1,7 +1,7 @@
 # train.py
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # đặt TRƯỚC khi import torch
-
+from src.models.trainer import CompletionOnlyTrainer
 import torch
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
@@ -58,7 +58,7 @@ training_args = TrainingArguments(
     seed=3407,
 )
 
-trainer = Trainer(
+trainer = CompletionOnlyTrainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,

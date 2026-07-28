@@ -36,16 +36,15 @@ def build_dataset(jsonl_path: str, tokenizer, max_seq_length: int = 4096) -> Dat
     print(f"{jsonl_path}: kept {len(kept)}, dropped {n_dropped} (> {max_seq_length} tokens)")
     return Dataset.from_list(kept)
 
-
 def make_collate_fn(pad_token_id: int):
     def collate_fn(batch):
         max_len = max(len(ex["input_ids"]) for ex in batch)
         input_ids, labels, attention_mask = [], [], []
         for ex in batch:
             pad_len = max_len - len(ex["input_ids"])
-            input_ids.append(ex["input_ids"] + [pad_token_id] * pad_len)
-            labels.append(ex["labels"] + [-100] * pad_len)
-            attention_mask.append(ex["attention_mask"] + [0] * pad_len)
+            input_ids.append([pad_token_id] * pad_len + ex["input_ids"])      # pad ở ĐẦU
+            labels.append([-100] * pad_len + ex["labels"])
+            attention_mask.append([0] * pad_len + ex["attention_mask"])
         return {
             "input_ids": torch.tensor(input_ids),
             "labels": torch.tensor(labels),
