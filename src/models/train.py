@@ -24,7 +24,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, quantization_config=bnb_config, device_map="auto", attn_implementation="flash_attention_2")
+model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, quantization_config=bnb_config, device_map="auto", attn_implementation="sdpa")
 model = prepare_model_for_kbit_training(model)
 
 lora_config = LoraConfig(
