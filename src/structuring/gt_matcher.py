@@ -33,3 +33,17 @@ def match_field_to_blocks(
     # sort theo dòng (bucket y0 để chống nhiễu OCR), rồi theo x0 trong dòng
     candidates.sort(key=lambda b: (round(b.bbox[1] / y_bucket), b.bbox[0]))
     return candidates
+
+
+def build_training_target(gt_fields: list[GTField], blocks: list[TextBlock]) -> dict:
+    """Sinh target JSON dạng {"fieldtype": "ID_xxxx ID_yyyy", ...} để train LoRA.
+    Nếu không match được block nào -> None (field bị OCR miss hoặc threshold chưa đúng)."""
+    target = {}
+    for gt in gt_fields:
+        matched = match_field_to_blocks(gt, blocks)
+        if not matched:
+            target[gt.fieldtype] = None
+            continue
+        tag_str = " ".join(f"ID_{b.id}" for b in matched)
+        target[gt.fieldtype] = tag_str
+    return target
