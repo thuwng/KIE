@@ -1,1 +1,3 @@
 tqdm
+transformer
+huggingface_hub

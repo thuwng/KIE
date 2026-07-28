@@ -11,6 +11,8 @@ def serialize(blocks: list[TextBlock]) -> tuple[str, dict]:
         id_map[b.id] = b
     return "\n".join(lines), id_map
 
+RESPONSE_MARKER = 'Output JSON (values must be ID tags, e.g. "document_id": "ID_0042"):'
+
 def build_prompt(schema: list[str], serialized_text: str) -> str:
     schema_str = ", ".join(schema)
     return f"""Extract the following fields as JSON, using ONLY the [ID_xxx] tags as values (not raw text). If a field is not present, use null.
@@ -19,4 +21,4 @@ Fields: {schema_str}
 Document:
 {serialized_text}
 
-Output JSON (values must be ID tags, e.g. "document_id": "ID_0042"):"""
+{RESPONSE_MARKER}"""

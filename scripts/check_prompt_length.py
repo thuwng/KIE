@@ -2,7 +2,7 @@
 import json
 from transformers import AutoTokenizer
 
-MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"  # đổi nếu bạn dùng model khác
+MODEL_NAME = "unsloth/llama-3-8b-Instruct" # đổi nếu bạn dùng model khác
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
