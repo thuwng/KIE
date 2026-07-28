@@ -10,7 +10,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from src.models.dataset import build_dataset, make_collate_fn
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
-MAX_SEQ_LENGTH = 4096
+MAX_SEQ_LENGTH = 2048
 
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
