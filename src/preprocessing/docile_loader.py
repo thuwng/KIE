@@ -58,7 +58,7 @@ def load_gt_fields(ann_path: str) -> list[GTField]:
             bbox=tuple(fe["bbox"]),
             page=fe["page"],
         )
-        for fe in ann["field_extractions"]
+        for fe in field_extractions
     ]
 
 
