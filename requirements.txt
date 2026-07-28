@@ -6,3 +6,4 @@ trl
 bitsandbytes 
 accelerate
 torch
+flash-attn
