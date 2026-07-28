@@ -18,10 +18,8 @@ def _area(bbox: tuple) -> float:
 
 
 def match_field_to_blocks(
-    gt: GTField, blocks: list[TextBlock], containment_threshold: float = 0.5
+    gt: GTField, blocks: list[TextBlock], containment_threshold: float = 0.5, y_bucket: float = 0.005
 ) -> list[TextBlock]:
-    """Trả về các block OCR nằm phần lớn (>threshold diện tích) trong bbox của GT field,
-    trên cùng page, đã sort theo thứ tự đọc (top-to-bottom, left-to-right)."""
     candidates = []
     for b in blocks:
         if b.page != gt.page:
@@ -32,19 +30,6 @@ def match_field_to_blocks(
         ratio = _intersection_area(b.bbox, gt.bbox) / b_area
         if ratio >= containment_threshold:
             candidates.append(b)
-    candidates.sort(key=lambda b: (b.bbox[1], b.bbox[0]))  # y0, rồi x0
+    # sort theo dòng (bucket y0 để chống nhiễu OCR), rồi theo x0 trong dòng
+    candidates.sort(key=lambda b: (round(b.bbox[1] / y_bucket), b.bbox[0]))
     return candidates
-
-
-def build_training_target(gt_fields: list[GTField], blocks: list[TextBlock]) -> dict:
-    """Sinh target JSON dạng {"fieldtype": "ID_xxxx ID_yyyy", ...} để train LoRA.
-    Nếu không match được block nào -> None (field bị OCR miss hoặc threshold chưa đúng)."""
-    target = {}
-    for gt in gt_fields:
-        matched = match_field_to_blocks(gt, blocks)
-        if not matched:
-            target[gt.fieldtype] = None
-            continue
-        tag_str = " ".join(f"ID_{b.id}" for b in matched)
-        target[gt.fieldtype] = tag_str
-    return target
