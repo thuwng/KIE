@@ -1,3 +1,7 @@
 tqdm
 transformer
 huggingface_hub
+peft 
+trl 
+bitsandbytes 
+accelerate
