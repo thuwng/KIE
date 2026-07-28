@@ -1,15 +1,11 @@
 # train.py
 import torch
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    TrainingArguments,
+    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
+    TrainingArguments, Trainer,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
-from src.models.dataset import build_dataset
-from src.structuring.serializer import RESPONSE_MARKER
+from src.models.dataset import build_dataset, make_collate_fn
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 MAX_SEQ_LENGTH = 4096
@@ -25,19 +21,11 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    quantization_config=bnb_config,
-    device_map="auto",
-)
+model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, quantization_config=bnb_config, device_map="auto")
 model = prepare_model_for_kbit_training(model)
 
 lora_config = LoraConfig(
-    r=16,
-    lora_alpha=16,
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
+    r=16, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 )
 model = get_peft_model(model, lora_config)
@@ -46,16 +34,11 @@ model.print_trainable_parameters()
 train_dataset = build_dataset("data/processed/train.jsonl", tokenizer, MAX_SEQ_LENGTH)
 val_dataset = build_dataset("data/processed/val.jsonl", tokenizer, MAX_SEQ_LENGTH)
 
-collator = DataCollatorForCompletionOnlyLM(
-    response_template=RESPONSE_MARKER,
-    tokenizer=tokenizer,
-)
-
 training_args = TrainingArguments(
     output_dir="outputs/lora_v0",
     per_device_train_batch_size=1,
     gradient_accumulation_steps=8,
-    gradient_checkpointing = True,
+    gradient_checkpointing=True,
     num_train_epochs=2,
     learning_rate=2e-4,
     warmup_steps=20,
@@ -70,15 +53,12 @@ training_args = TrainingArguments(
     seed=3407,
 )
 
-trainer = SFTTrainer(
+trainer = Trainer(
     model=model,
-    tokenizer=tokenizer,
+    args=training_args,
     train_dataset=train_dataset,
     eval_dataset=val_dataset,
-    dataset_text_field="text",
-    max_seq_length=MAX_SEQ_LENGTH,
-    data_collator=collator,
-    args=training_args,
+    data_collator=make_collate_fn(tokenizer.pad_token_id),
 )
 
 trainer.train()
