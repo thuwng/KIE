@@ -58,12 +58,12 @@ training_args = TrainingArguments(
     seed=3407,
 )
 
-trainer = CompletionOnlyTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-    data_collator=make_collate_fn(tokenizer.pad_token_id),
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
+model = AutoLigerKernelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    quantization_config=bnb_config,
+    device_map="auto",
 )
 
 trainer.train()
