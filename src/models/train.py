@@ -23,7 +23,14 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, quantization_config=bnb_config, device_map="auto", attn_implementation="sdpa")
+#model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, quantization_config=bnb_config, device_map="auto", attn_implementation="sdpa")
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
+model = AutoLigerKernelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    quantization_config=bnb_config,
+    device_map="auto",
+)
 model = prepare_model_for_kbit_training(model)
 
 lora_config = LoraConfig(
@@ -57,14 +64,14 @@ training_args = TrainingArguments(
     seed=3407,
 )
 
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
-model = AutoLigerKernelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    quantization_config=bnb_config,
-    device_map="auto",
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    data_collator=make_collate_fn(tokenizer.pad_token_id),
 )
-
 trainer.train()
 model.save_pretrained("outputs/lora_v0")
 tokenizer.save_pretrained("outputs/lora_v0")
