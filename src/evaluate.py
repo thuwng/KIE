@@ -80,10 +80,16 @@ class MetricAccumulator:
         mf1 = 2 * mp * mr / (mp + mr) if (mp + mr) else 0.0
         print(f"Micro-average: P={mp:.3f} R={mr:.3f} F1={mf1:.3f}")
 
+import sys
+
+FILTER_IDS_PATH = sys.argv[1] if len(sys.argv) > 1 else None  # truyền path json list id, hoặc bỏ trống = full val
 
 def evaluate():
     records = [json.loads(l) for l in open(VAL_PATH)]
-
+    if FILTER_IDS_PATH:
+        allowed = set(json.load(open(FILTER_IDS_PATH)))
+        records = [r for r in records if r["doc_id"] in allowed]
+        print(f"Đang eval trên {len(records)}/{len(json.load(open(VAL_PATH)))} doc (filtered)")
     exact = MetricAccumulator("1. Exact-match F1 (toàn field phải khớp tuyệt đối)")
     token = MetricAccumulator("2. Token-level F1 (so từng ID riêng lẻ, partial credit)")
     text_norm = MetricAccumulator("3. Text-normalized F1 (so text sau back-map + normalize)")
