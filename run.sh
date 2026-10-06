@@ -1,232 +1,156 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =============================================================================
-# run_latent_segment.sh — đặt ở thư mục gốc repo (cùng cấp examples/ và layoutlmft/)
+# FUNSD: LayoutLMv3 gốc (B0) và Latent Soft Segment (LSS).
 #
-#   bash run_latent_segment.sh tune      # B1: chọn latent_layer trên DEV (10% train), KHÔNG đụng test
-#   LAYER=6 bash run_latent_segment.sh final     # B2: bảng chính, 5 seed, số bước cố định, chấm trên test
-#   LAYER=6 bash run_latent_segment.sh ablation  # B3: ablation + cận trên oracle (cần chạy final trước)
-#   bash run_latent_segment.sh report    # tổng hợp: mean ± std, delta theo cặp seed, file summary
-#   bash run_latent_segment.sh smoke     # chạy thử 20 bước để kiểm tra code trước khi chạy thật
+#   SETTING=A MODEL=B0                     bash scripts/run_lss.sh   # tái hiện paper (~90.3)
+#   SETTING=C MODEL=B0                     bash scripts/run_lss.sh   # baseline đúng cho setting chính
+#   SETTING=C MODEL=LSS PROTOCOL=dev LAYER=4 bash scripts/run_lss.sh # tune trên dev
+#   SETTING=C MODEL=LSS LAYER=6            bash scripts/run_lss.sh   # số báo cáo
+#   SETTING=C MODEL=LSS LAYER=6 ORACLE=1   bash scripts/run_lss.sh   # cận trên, dùng lại checkpoint LSS
+#   SETTING=C MODEL=LSS LAYER=6 EXTRA="--latent_attn_bias False" EXTRA_TAG=-noBias bash scripts/run_lss.sh
 #
-# METRIC CHÍNH: test_f1 = seqeval entity-level (IOB2, mode mặc định như LayoutLMv3 gốc), cấp tài liệu.
-# Ảnh visualize tự sinh cho seed VIS_SEED (mặc định seed đầu tiên) ở mọi thí nghiệm có --do_predict.
-#
-# Biến tùy chỉnh: GPU=0 SEEDS="42 43 44 45 46" MODEL=microsoft/layoutlmv3-base OUT=runs
-#                 BS=2 ACC=8 LAYER=6 KEEP_CKPT=0 EVAL_FLAG=--evaluation_strategy
+# SETTING : A = box segment gold + thứ tự annotation (chỉ để đối chiếu 90.29, có rò rỉ nhãn)
+#           B = box từ + thứ tự annotation
+#           C = box từ + thứ tự đọc (trên->dưới, trái->phải)   <- SETTING CHÍNH
+# METRIC  : test_f1 = seqeval entity-level (IOB2, mode mặc định như LayoutLMv3), gộp về nguyên tài liệu.
+# Chỉ so LSS với B0 CÙNG SETTING + PROTOCOL (script tự in delta nếu đã chạy B0).
 # =============================================================================
-set -uo pipefail
-REPO=${REPO:-$(cd "$(dirname "$0")" && pwd)}
-cd "$REPO"
-export PYTHONPATH="$REPO:${PYTHONPATH:-}"
+set -eo pipefail
+
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$(pwd):$PYTHONPATH"
 export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true
 
-GPU=${GPU:-0}
-SEEDS=${SEEDS:-"42 43 44 45 46"}
-read -r -a SEED_ARR <<< "$SEEDS"
-VIS_SEED=${VIS_SEED:-${SEED_ARR[0]}}
-MODEL=${MODEL:-microsoft/layoutlmv3-base}
-OUT=${OUT:-runs}
-STEPS=${STEPS:-1000}      # giống LayoutLMv3 gốc trên FUNSD
-LR=${LR:-1e-5}
-BS=${BS:-2}               # BS*ACC = 16 = batch hiệu dụng của paper (8 GPU x 2)
-ACC=${ACC:-8}
-LAYER=${LAYER:-6}         # cập nhật sau bước tune
-KEEP_CKPT=${KEEP_CKPT:-0} # 0 = xoá trọng số sau khi chạy xong (trừ C, D cần cho oracle/vẽ lại)
-EVAL_FLAG=${EVAL_FLAG:---evaluation_strategy}   # transformers mới đổi tên thành --eval_strategy
-MAIN=funsd_word_ro        # SETTING CHÍNH: box từ + thứ tự đọc heuristic, không nhóm gold lúc test
-STAGE=${1:-final}
+SETTING=${SETTING:-C}
+MODEL=${MODEL:-B0}
+PROTOCOL=${PROTOCOL:-final}
+LAYER=${LAYER:-6}
+ORACLE=${ORACLE:-0}
+SEEDS=(${SEEDS:-42 123 1993})
+MODEL_PATH=${MODEL_PATH:-models/layoutlmv3-base}
+EXTRA=${EXTRA:-}
+EXTRA_TAG=${EXTRA_TAG:-}
 
-mkdir -p "$OUT"
-STATUS="$OUT/run_status.tsv"
-[ -f "$STATUS" ] || printf 'time\texperiment\tconfig\tseed\tstatus\tseconds\toutput_dir\n' > "$STATUS"
-
-COMMON=(--model_name_or_path "$MODEL" --dataset_name funsd
-        --max_steps "$STEPS" --learning_rate "$LR"
-        --per_device_train_batch_size "$BS" --gradient_accumulation_steps "$ACC"
-        --per_device_eval_batch_size 4 --fp16
-        --save_strategy no --logging_steps 20 --report_to none
-        --overwrite_output_dir --dataloader_num_workers 4 --input_size 224)
-
-LATENT=(--use_latent_segment True --latent_layer "$LAYER")
-
-# run <tên_thí_nghiệm> <dataset_config> <seed> [tham số thêm...]
-run () {
-  local name=$1 cfg=$2 seed=$3; shift 3
-  local out="$OUT/$name/seed$seed"
-  if [ -f "$out/test_results.json" ] || [ -f "$out/eval_results.json" ]; then
-    echo ">> bỏ qua (đã có kết quả): $out"; return 0; fi
-  mkdir -p "$out"
-  local vis=()
-  [ "$seed" = "$VIS_SEED" ] && vis=(--visualize True)
-  local cmd=(python examples/run_funsd_cord.py "${COMMON[@]}" --dataset_config_name "$cfg"
-             --seed "$seed" --output_dir "$out" ${vis[@]+"${vis[@]}"} "$@")
-  printf '%q ' "${cmd[@]}" > "$out/cmd.sh"; echo >> "$out/cmd.sh"       # lệnh chạy lại được nguyên văn
-  echo "================================================================"
-  echo "=== [$name] $cfg | seed $seed | $(date '+%F %T')"
-  echo "================================================================"
-  local t0; t0=$(date +%s)
-  CUDA_VISIBLE_DEVICES=$GPU "${cmd[@]}" 2>&1 | tee "$out/console.log"   # console.log: mọi thứ, kể cả traceback
-  local rc=${PIPESTATUS[0]}
-  local dt=$(( $(date +%s) - t0 ))
-  local st=OK; [ "$rc" -ne 0 ] && st="FAIL($rc)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$name" "$cfg" "$seed" "$st" "$dt" "$out" >> "$STATUS"
-  if [ "$rc" -ne 0 ]; then
-    echo "!! LỖI ($rc) ở $name seed $seed — xem $out/console.log (chạy tiếp thí nghiệm khác)"; return 0; fi
-  if [ "$KEEP_CKPT" != "1" ] && [ "$name" != "C_wordRO_baseline" ] && [ "$name" != "D_wordRO_LSS" ]; then
-    rm -f "$out"/pytorch_model.bin "$out"/model.safetensors                # giữ log, bỏ trọng số cho đỡ tốn đĩa
-  fi
-}
-
-case "$STAGE" in
-  smoke)
-    OUT="$OUT/_smoke"; STATUS="$OUT/run_status.tsv"; mkdir -p "$OUT"
-    printf 'time\texperiment\tconfig\tseed\tstatus\tseconds\toutput_dir\n' > "$STATUS"
-    SMOKE=(--max_steps 20 --max_train_samples 4 --max_test_samples 4 --logging_steps 5)
-    run smoke_baseline $MAIN 42 --do_train --do_predict "${SMOKE[@]}"
-    run smoke_LSS      $MAIN 42 --do_train --do_predict "${SMOKE[@]}" "${LATENT[@]}"
-    cat "$STATUS"
-    ;;
-
-  tune)
-    # Chỉ dùng DEV (tách cố định dev_split_seed=42). Log dev F1 mỗi 100 bước -> log_history.jsonl
-    for L in 4 6 8; do
-      run "tune_latent_L$L" $MAIN 42 --do_train --do_eval --dev_ratio 0.1 \
-          "$EVAL_FLAG" steps --eval_steps 100 --use_latent_segment True --latent_layer $L
-    done
-    run tune_baseline $MAIN 42 --do_train --do_eval --dev_ratio 0.1 "$EVAL_FLAG" steps --eval_steps 100
-    ;;
-
-  final)
-    # KHÔNG đánh giá trên test trong lúc train; chỉ predict 1 lần ở checkpoint cuối.
-    for s in "${SEED_ARR[@]}"; do
-      run A_goldseg_baseline   funsd         $s --do_train --do_predict              # tham chiếu (rò rỉ nhãn)
-      run B_word_baseline      funsd_word    $s --do_train --do_predict
-      run C_wordRO_baseline    $MAIN         $s --do_train --do_predict
-      run D_wordRO_LSS         $MAIN         $s --do_train --do_predict "${LATENT[@]}" # PHƯƠNG PHÁP CHÍNH
-      run E_word_LSS           funsd_word    $s --do_train --do_predict "${LATENT[@]}"
-    done
-    ;;
-
-  ablation)
-    for s in "${SEED_ARR[@]}"; do
-      # Cận trên: dùng lại checkpoint D, chỉ đổi sang nhóm gold lúc test (không train lại)
-      if [ -d "$OUT/D_wordRO_LSS/seed$s" ]; then
-        run F_wordRO_LSS_oracle $MAIN $s --do_predict "${LATENT[@]}" --latent_oracle_eval True \
-            --model_name_or_path "$OUT/D_wordRO_LSS/seed$s"
-      else
-        echo "!! Thiếu checkpoint $OUT/D_wordRO_LSS/seed$s — chạy 'final' trước"; fi
-      run G_noAttnBias   $MAIN $s --do_train --do_predict "${LATENT[@]}" --latent_attn_bias False
-      run H_noSoftBox    $MAIN $s --do_train --do_predict "${LATENT[@]}" --latent_soft_box False
-      run I_noTF         $MAIN $s --do_train --do_predict "${LATENT[@]}" --latent_tf_ratio 0
-      run J_noAffLoss    $MAIN $s --do_train --do_predict "${LATENT[@]}" --affinity_loss_weight 0
-      run K_noImage_LSS  $MAIN $s --do_train --do_predict "${LATENT[@]}" --visual_embed False
-      run K_noImage_base $MAIN $s --do_train --do_predict --visual_embed False
-    done
-    ;;
-
-  report)
-    OUT="$OUT" SEEDS="$SEEDS" python - <<'PY'
-import glob, json, os, re
-import numpy as np
-
-root, seeds = os.environ["OUT"], os.environ["SEEDS"].split()
-# Thí nghiệm -> thí nghiệm tham chiếu để tính delta (cùng setting, cùng seed)
-REF = {"B_word_baseline": "A_goldseg_baseline", "C_wordRO_baseline": "B_word_baseline",
-       "D_wordRO_LSS": "C_wordRO_baseline", "E_word_LSS": "B_word_baseline",
-       "F_wordRO_LSS_oracle": "D_wordRO_LSS", "G_noAttnBias": "D_wordRO_LSS", "H_noSoftBox": "D_wordRO_LSS",
-       "I_noTF": "D_wordRO_LSS", "J_noAffLoss": "D_wordRO_LSS", "K_noImage_LSS": "K_noImage_base",
-       "K_noImage_base": "C_wordRO_baseline", "tune_latent_L4": "tune_baseline",
-       "tune_latent_L6": "tune_baseline", "tune_latent_L8": "tune_baseline"}
-
-def load(exp):
-    """-> (split, prefix, {seed: metrics})"""
-    for split, fn, pre in (("test", "test_results.json", "test_"), ("dev", "eval_results.json", "eval_")):
-        runs = {}
-        for f in sorted(glob.glob(os.path.join(root, exp, "seed*", fn))):
-            seed = os.path.basename(os.path.dirname(f))[4:]
-            runs[seed] = json.load(open(f))
-            tr = os.path.join(os.path.dirname(f), "train_results.json")
-            if os.path.exists(tr):
-                runs[seed].update({"train_" + k.replace("train_", ""): v for k, v in json.load(open(tr)).items()})
-        if runs:
-            return split, pre, runs
-    return None, None, {}
-
-def ms(v):
-    v = np.asarray(v, dtype=float)
-    return float(v.mean()), (float(v.std(ddof=1)) if len(v) > 1 else 0.0)
-
-exps = sorted(e for e in os.listdir(root) if os.path.isdir(os.path.join(root, e)) and not e.startswith("_"))
-data = {e: load(e) for e in exps}
-summary, rows = {}, []
-for e in exps:
-    split, pre, runs = data[e]
-    if not runs:
-        continue
-    keys = sorted({k for r in runs.values() for k, v in r.items() if isinstance(v, (int, float))})
-    stats = {k: dict(zip(("mean", "std"), ms([r[k] for r in runs.values() if k in r])),
-                     n=sum(k in r for r in runs.values())) for k in keys}
-    main_key = pre + "f1"
-    ent = {"split": split, "seeds": sorted(runs), "missing_seeds": [s for s in seeds if s not in runs]
-           if not e.startswith("tune") else [], "main_key": main_key,
-           "main_f1": {**stats[main_key], "values": [runs[s][main_key] for s in sorted(runs)]}, "metrics": stats}
-    ref = REF.get(e)
-    if ref and data.get(ref, (None, None, {}))[2]:
-        rruns = data[ref][2]
-        common = sorted(set(runs) & set(rruns))
-        if common:                                   # delta theo CẶP seed (khử nhiễu do seed)
-            d = [runs[s][main_key] - rruns[s][main_key] for s in common]
-            dm, ds = ms(d)
-            ent["delta_vs"] = {"ref": ref, "paired_seeds": common, "mean": dm, "std": ds,
-                               "wins": int(sum(x > 0 for x in d))}
-    summary[e] = ent
-    json.dump(ent, open(os.path.join(root, e, "summary.json"), "w"), indent=2, ensure_ascii=False)
-
-# --------- bảng in ra + summary.md ---------
-def g(e, k, scale=100, digits=2):
-    m = summary[e]["metrics"].get(summary[e]["main_key"].split("f1")[0] + k)
-    return f"{scale * m['mean']:.{digits}f}" if m else "-"
-
-types = sorted({re.match(r"(?:test|eval)_([A-Z][A-Z_.]*)_f1$", k).group(1)
-                for e in summary for k in summary[e]["metrics"] if re.match(r"(?:test|eval)_([A-Z][A-Z_.]*)_f1$", k)})
-types = types if len(types) <= 4 else []           # CORD có nhiều loại -> xem summary.json
-hdr = ["experiment", "split", "n", "F1 mean±std", "P", "R"] + [f"F1 {t[:8]}" for t in types] + \
-      ["pairF1", "TYPE", "SPAN", "FP", "FN", "Δ vs ref (paired)", "time/run"]
-lines = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
-for e, s in summary.items():
-    m = s["main_f1"]
-    d = s.get("delta_vs")
-    dtxt = f"{100*d['mean']:+.2f}±{100*d['std']:.2f} vs {d['ref']} ({d['wins']}/{len(d['paired_seeds'])} thắng)" if d else "-"
-    t = s["metrics"].get("train_runtime", {}).get("mean")
-    row = [e, s["split"], str(m["n"]), f"{100*m['mean']:.2f} ± {100*m['std']:.2f}", g(e, "precision"), g(e, "recall")] + \
-          [g(e, f"{ty}_f1") for ty in types] + [g(e, "group_pair_f1")] + \
-          [g(e, f"err_{k}", 1, 1) for k in ("TYPE", "SPAN", "FP", "FN")] + \
-          [dtxt, f"{t/60:.0f}m" if t else "-"]
-    lines.append("| " + " | ".join(row) + " |")
-    if s["missing_seeds"]:
-        print(f"[thiếu seed] {e}: {s['missing_seeds']}")
-    if s["metrics"].get(s["main_key"].replace("f1", "metric_consistent"), {}).get("mean", 1) < 1:
-        print(f"[CẢNH BÁO] {e}: F1 đếm lỗi lệch seqeval ở ít nhất 1 seed")
-
-# Phần khoảng hở lấy lại được: (D - C) / (F - C)
-if all(k in summary for k in ("C_wordRO_baseline", "D_wordRO_LSS", "F_wordRO_LSS_oracle")):
-    c, d_, f = (summary[k]["main_f1"]["mean"] for k in ("C_wordRO_baseline", "D_wordRO_LSS", "F_wordRO_LSS_oracle"))
-    if f - c > 1e-9:
-        lines.append(f"\nKhoảng hở lấy lại được (D−C)/(F−C) = {100*(d_-c)/(f-c):.1f}%")
-
-table = "\n".join(lines)
-print(table)
-open(os.path.join(root, "summary.md"), "w").write(
-    "Metric chính: seqeval entity-level F1 (IOB2, mode mặc định), cấp tài liệu. "
-    "Lỗi = số entity trung bình mỗi seed.\n\n" + table + "\n")
-json.dump(summary, open(os.path.join(root, "summary.json"), "w"), indent=2, ensure_ascii=False)
-print(f"\nĐã lưu {root}/summary.md, {root}/summary.json, {root}/<exp>/summary.json")
-fails = [l for l in open(os.path.join(root, "run_status.tsv")).read().splitlines()[1:] if "FAIL" in l] \
-    if os.path.exists(os.path.join(root, "run_status.tsv")) else []
-if fails:
-    print("\n[LƯỢT LỖI]\n" + "\n".join(fails))
-PY
-    ;;
-  *) echo "Dùng: bash $0 {smoke|tune|final|ablation|report}"; exit 1 ;;
+case "$SETTING" in
+  A) CONFIG=funsd ;;
+  B) CONFIG=funsd_word ;;
+  C) CONFIG=funsd_word_ro ;;
+  *) echo "SETTING phải là A, B hoặc C"; exit 1 ;;
 esac
+
+case "$MODEL" in
+  B0)  MODEL_FLAGS="" ;;
+  LSS) MODEL_FLAGS="--use_latent_segment True --latent_layer ${LAYER}" ;;
+  *) echo "MODEL phải là B0 hoặc LSS"; exit 1 ;;
+esac
+
+# dev: tách 10% train làm dev, log dev F1 mỗi 100 bước. final: train toàn bộ, chấm test 1 lần ở bước cuối.
+case "$PROTOCOL" in
+  dev)   PROTO_FLAGS="--do_train --do_eval --dev_ratio 0.1 --evaluation_strategy steps --eval_steps 100" ;;
+  final) PROTO_FLAGS="--do_train --do_predict" ;;
+  *) echo "PROTOCOL phải là dev hoặc final"; exit 1 ;;
+esac
+
+BASE_TAG="funsd-${PROTOCOL}-${SETTING}-${MODEL}"
+[ "$MODEL" = "LSS" ] && BASE_TAG="${BASE_TAG}-L${LAYER}"
+BASE_TAG="${BASE_TAG}${EXTRA_TAG}"
+TAG="$BASE_TAG"
+if [ "$ORACLE" = "1" ]; then
+  [ "$MODEL" = "LSS" ] && [ "$PROTOCOL" = "final" ] || { echo "ORACLE chỉ dùng với MODEL=LSS PROTOCOL=final"; exit 1; }
+  TAG="${BASE_TAG}-ORACLE"
+fi
+
+for SEED in "${SEEDS[@]}"; do
+  OUT_DIR="./logs/${TAG}-seed${SEED}"
+  mkdir -p "$OUT_DIR"
+
+  RUN_FLAGS="$PROTO_FLAGS --model_name_or_path $MODEL_PATH"
+  if [ "$ORACLE" = "1" ]; then   # không train lại: nạp checkpoint LSS cùng seed, test với nhóm gold
+    RUN_FLAGS="--do_predict --latent_oracle_eval True --model_name_or_path ./logs/${BASE_TAG}-seed${SEED}"
+  fi
+  VIS=""
+  [ "$SEED" = "${SEEDS[0]}" ] && VIS="--visualize True"   # chỉ vẽ ảnh cho seed đầu
+
+  echo "=== ${TAG} | seed ${SEED} ==="
+  # Siêu tham số theo paper LayoutLMv3 cho FUNSD: batch 16 (2 x 8 accumulation), lr 1e-5, 1000 bước,
+  # không warmup, không chọn checkpoint (giữ checkpoint cuối). EXTRA đặt CUỐI để ghi đè được.
+  python examples/run_funsd_cord.py \
+    --dataset_name funsd --dataset_config_name "$CONFIG" \
+    $RUN_FLAGS $MODEL_FLAGS $VIS \
+    --output_dir "$OUT_DIR" \
+    --visual_embed True --input_size 224 \
+    --max_steps 1000 --learning_rate 1e-5 \
+    --per_device_train_batch_size 2 --gradient_accumulation_steps 8 --per_device_eval_batch_size 4 \
+    --save_strategy no --logging_steps 20 \
+    --dataloader_num_workers 4 --report_to none \
+    --seed "$SEED" --overwrite_output_dir \
+    $EXTRA 2>&1 | tee "$OUT_DIR/console.log"
+done
+
+# ----------------------------------------------------------------------------- tổng hợp
+export TAG BASE_TAG PROTOCOL SETTING MODEL ORACLE SEEDS_STR="${SEEDS[*]}"
+python - <<'PY'
+import os, json, numpy as np
+tag, base_tag = os.environ["TAG"], os.environ["BASE_TAG"]
+proto, setting = os.environ["PROTOCOL"], os.environ["SETTING"]
+seeds = os.environ["SEEDS_STR"].split()
+pre, fn = ("eval_", "eval_results.json") if proto == "dev" else ("test_", "test_results.json")
+main_key = pre + "f1"
+
+runs = {}
+for s in seeds:
+    p = f"./logs/{tag}-seed{s}/{fn}"
+    if not os.path.exists(p):
+        print("[thiếu]", p); continue
+    r = json.load(open(p))
+    t = f"./logs/{tag}-seed{s}/train_results.json"
+    if os.path.exists(t):
+        r["train_runtime"] = json.load(open(t)).get("train_runtime", 0.0)
+    runs[s] = r
+if not runs:
+    raise SystemExit("Không có kết quả nào.")
+
+keep = ("f1", "precision", "recall", "err_", "consistent", "runtime")
+keys = sorted({k for r in runs.values() for k, v in r.items()
+               if isinstance(v, (int, float)) and any(x in k for x in keep)})
+summary = {}
+for k in keys:
+    v = [float(runs[s][k]) for s in runs if k in runs[s]]
+    summary[k] = {"values": v, "mean": float(np.mean(v)), "std": float(np.std(v, ddof=1)) if len(v) > 1 else 0.0}
+summary["main_f1"] = dict(summary[main_key], seeds=list(runs), source=main_key)
+
+print(f"\n===== {tag} | {len(runs)} seed: {', '.join(runs)} =====")
+for k, d in summary.items():
+    if k == "main_f1":
+        continue
+    sc = 100 if any(x in k for x in ("f1", "precision", "recall")) else (1 / 60 if "runtime" in k else 1)
+    unit = " phút" if "runtime" in k else ""
+    print(f"{k:34s} {sc*d['mean']:8.2f} ± {sc*d['std']:5.2f}{unit}")
+m = summary["main_f1"]
+print(f"{'>>> main_f1 (' + main_key + ')':34s} {100*m['mean']:8.2f} ± {100*m['std']:5.2f}   "
+      f"[{', '.join(f'{100*x:.2f}' for x in m['values'])}]")
+json.dump(summary, open(f"./logs/{tag}_summary.json", "w"), indent=2)
+print("Saved:", f"./logs/{tag}_summary.json")
+
+def paired_delta(ref_file, name):
+    if not os.path.exists(ref_file):
+        print(f"(chưa có {ref_file} để so sánh)"); return None
+    ref = json.load(open(ref_file))["main_f1"]
+    rv = dict(zip(ref["seeds"], ref["values"]))
+    d = [runs[s][main_key] - rv[s] for s in runs if s in rv]
+    if not d:
+        return None
+    print(f"so với {name}: {100*np.mean(d):+.2f} ± {100*(np.std(d, ddof=1) if len(d) > 1 else 0):.2f} điểm "
+          f"(theo cặp seed, thắng {sum(x > 0 for x in d)}/{len(d)}) [{name} {100*ref['mean']:.2f}]")
+    return ref["mean"]
+
+# So với B0 cùng setting + protocol (theo cặp seed)
+if os.environ["MODEL"] != "B0":
+    b0_mean = paired_delta(f"./logs/funsd-{proto}-{setting}-B0_summary.json", "B0")
+    # Cận trên: phần khoảng hở lấy lại được = (LSS - B0) / (ORACLE - B0)
+    if os.environ["ORACLE"] == "1":
+        lss_mean = paired_delta(f"./logs/{base_tag}_summary.json", "LSS (không oracle)")
+        if b0_mean is not None and lss_mean is not None and m["mean"] - b0_mean > 1e-9:
+            print(f"Khoảng hở lấy lại được (LSS−B0)/(ORACLE−B0) = {100*(lss_mean-b0_mean)/(m['mean']-b0_mean):.1f}%")
+PY
