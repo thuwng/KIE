@@ -83,7 +83,7 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
 
         has_bbox_input = "bbox" in features[0]
         has_position_input = "position_ids" in features[0]
-        has_seg_id_input = "seg_id" in features[0]  # NEW: for LayoutLMv3ForSegmentTokenClassification
+        has_seg_id_input = "group_ids" in features[0]  # NEW: for LayoutLMv3ForSegmentTokenClassification
         padding_idx=self.tokenizer.pad_token_id
         sequence_length = torch.tensor(batch["input_ids"]).shape[1]
         padding_side = self.tokenizer.padding_side

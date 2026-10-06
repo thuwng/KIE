@@ -152,6 +152,7 @@ class LayoutLMv3Embeddings(nn.Module):
         position_ids=None,
         inputs_embeds=None,
         past_key_values_length=0,
+        spatial_position_embeddings=None,
     ):
         if position_ids is None:
             if input_ids is not None:
@@ -177,7 +178,8 @@ class LayoutLMv3Embeddings(nn.Module):
         position_embeddings = self.position_embeddings(position_ids)
         embeddings += position_embeddings
 
-        spatial_position_embeddings = self._calc_spatial_position_embeddings(bbox)
+        if spatial_position_embeddings is None:
+            spatial_position_embeddings = self._calc_spatial_position_embeddings(bbox)
 
         embeddings = embeddings + spatial_position_embeddings
 
@@ -608,6 +610,8 @@ class LayoutLMv3Encoder(nn.Module):
             j = 0
 
         for i, layer_module in enumerate(self.layer):
+            if max_layers is not None and i >= max_layers:
+                break
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -818,6 +822,9 @@ class LayoutLMv3Model(LayoutLMv3PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         images=None,
+        spatial_position_embeddings=None,
+        extra_attention_bias=None,
+        max_layers=None,
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -945,6 +952,8 @@ class LayoutLMv3Model(LayoutLMv3PreTrainedModel):
                 final_position_ids = position_ids
 
         extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, None, device)
+        if extra_attention_bias is not None:   # (B,heads,L,L) cộng vào mask (B,1,1,L)
+            extended_attention_mask = extended_attention_mask + extra_attention_bias.to(extended_attention_mask.dtype)
 
         encoder_outputs = self.encoder(
             embedding_output,
@@ -962,6 +971,7 @@ class LayoutLMv3Model(LayoutLMv3PreTrainedModel):
             Hp=Hp,
             Wp=Wp,
             valid_span=valid_span,
+            max_layers=max_layers,
         )
 
         if self.detection:

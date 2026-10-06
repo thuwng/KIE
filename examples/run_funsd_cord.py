@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
+import json
 import logging
 import os
 import sys
@@ -25,7 +26,6 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.5.0")
 
 logger = logging.getLogger(__name__)
@@ -34,144 +34,66 @@ from layoutlmft.data.image_utils import RandomResizedCropAndInterpolationWithTwo
 from timm.data.constants import \
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 from torchvision import transforms
-import torch
+
 
 @dataclass
 class ModelArguments:
-    """
-    Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
-    """
-
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
-    config_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
-    )
-    tokenizer_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
-    )
-    cache_dir: Optional[str] = field(
-        default=None,
-        metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
-    )
-    model_revision: str = field(
-        default="main",
-        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
-    )
-    use_auth_token: bool = field(
-        default=False,
-        metadata={
-            "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
-            "with private models)."
-        },
-    )
+    config_name: Optional[str] = field(default=None)
+    tokenizer_name: Optional[str] = field(default=None)
+    cache_dir: Optional[str] = field(default=None)
+    model_revision: str = field(default="main")
+    use_auth_token: bool = field(default=False)
 
 
 @dataclass
 class DataTrainingArguments:
-    """
-    Arguments pertaining to what data we are going to input our model for training and eval.
-    """
-
-    task_name: Optional[str] = field(default="ner", metadata={"help": "The name of the task (ner, pos...)."})
-    dataset_name: Optional[str] = field(
-        default='funsd', metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    )
+    task_name: Optional[str] = field(default="ner")
+    dataset_name: Optional[str] = field(default='funsd', metadata={"help": "funsd | cord"})
     dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
-    )
-    train_file: Optional[str] = field(
-        default=None, metadata={"help": "The input training data file (a csv or JSON file)."}
-    )
-    validation_file: Optional[str] = field(
         default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate on (a csv or JSON file)."},
+        metadata={"help": "funsd | funsd_word | funsd_word_ro | cord | cord_word (mặc định = config gốc)"},
     )
-    test_file: Optional[str] = field(
-        default=None,
-        metadata={"help": "An optional input test data file to predict on (a csv or JSON file)."},
+    overwrite_cache: bool = field(default=False)
+    preprocessing_num_workers: Optional[int] = field(default=None)
+    pad_to_max_length: bool = field(default=True)
+    max_train_samples: Optional[int] = field(default=None)
+    max_val_samples: Optional[int] = field(default=None)
+    max_test_samples: Optional[int] = field(default=None)
+    label_all_tokens: bool = field(default=False)
+    return_entity_level_metrics: bool = field(default=False)
+    # NEW: tập dev để chọn siêu tham số. 0 = không tách dev (dùng cho lượt chạy cuối, số bước cố định).
+    dev_ratio: float = field(
+        default=0.0,
+        metadata={"help": "Tỉ lệ train tách làm dev (FUNSD không có dev). Dataset có sẵn validation thì dùng luôn."},
     )
-    overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
-    )
-    preprocessing_num_workers: Optional[int] = field(
-        default=None,
-        metadata={"help": "The number of processes to use for the preprocessing."},
-    )
-    pad_to_max_length: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to pad all samples to model maximum sentence length. "
-            "If False, will pad the samples dynamically when batching to the maximum length in the batch. More "
-            "efficient on GPU but very bad for TPU."
-        },
-    )
-    max_train_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        },
-    )
-    max_val_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of validation examples to this "
-            "value if set."
-        },
-    )
-    max_test_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of test examples to this "
-            "value if set."
-        },
-    )
-    label_all_tokens: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to put the label for one word on all tokens of generated by that word or just on the "
-            "one (in which case the other tokens will have a padding index)."
-        },
-    )
-    return_entity_level_metrics: bool = field(
-        default=False,
-        metadata={"help": "Whether to return all the entity levels during evaluation or just the overall ones."},
-    )
-    segment_level_layout: bool = field(default=True)
+    dev_split_seed: int = field(default=42, metadata={"help": "Seed CỐ ĐỊNH cho việc tách dev, độc lập seed train."})
     visual_embed: bool = field(default=True)
-    use_segment_head: bool = field(
-        default=False,
-        metadata={
-            "help": "Use LayoutLMv3ForSegmentTokenClassification (segment-level pooling + "
-            "inter-segment context head) instead of the vanilla per-token classification head."
-        },
-    )
-    data_dir: Optional[str] = field(default=None)
-    input_size: int = field(default=224, metadata={"help": "images input size for backbone"})
-    second_input_size: int = field(default=112, metadata={"help": "images input size for discrete vae"})
-    train_interpolation: str = field(
-        default='bicubic', metadata={"help": "Training interpolation (random, bilinear, bicubic)"})
-    second_interpolation: str = field(
-        default='lanczos', metadata={"help": "Interpolation for discrete vae (random, bilinear, bicubic)"})
-    imagenet_default_mean_and_std: bool = field(default=False, metadata={"help": ""})
+    # ---- NEW: Latent Soft Segment ----
+    use_latent_segment: bool = field(default=False, metadata={"help": "Dùng LayoutLMv3ForLatentSegmentTokenClassification"})
+    latent_layer: int = field(default=6, metadata={"help": "Số lớp chạy ở lượt 1 để tính affinity"})
+    latent_soft_box: bool = field(default=True, metadata={"help": "Ablation: tắt box mềm"})
+    latent_attn_bias: bool = field(default=True, metadata={"help": "Ablation: tắt bias attention"})
+    latent_tf_ratio: float = field(default=0.5, metadata={"help": "Teacher forcing giảm 1->0 trong tỉ lệ này của tổng bước; 0 = tắt"})
+    latent_oracle_eval: bool = field(default=False, metadata={"help": "CẬN TRÊN: dùng nhóm gold lúc test (không phải kết quả chính)"})
+    affinity_loss_weight: float = field(default=1.0)
+    head_learning_rate: float = field(default=5e-4, metadata={"help": "LR cho các tham số latent_* mới"})
+    input_size: int = field(default=224)
+    second_input_size: int = field(default=112)
+    train_interpolation: str = field(default='bicubic')
+    second_interpolation: str = field(default='lanczos')
+    imagenet_default_mean_and_std: bool = field(default=False)
 
 
 def main():
-    # See all possible arguments in layoutlmft/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
-
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Detecting last checkpoint.
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -180,84 +102,63 @@ def main():
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
                 "Use --overwrite_output_dir to overcome."
             )
-        elif last_checkpoint is not None:
-            logger.info(
-                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
-                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
-            )
 
-    # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
     logger.setLevel(logging.INFO if is_main_process(training_args.local_rank) else logging.WARN)
-
-    # Log on each process the small summary:
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
-    )
-    # Set the verbosity to info of the Transformers logger (on main process only):
     if is_main_process(training_args.local_rank):
         transformers.utils.logging.set_verbosity_info()
         transformers.utils.logging.enable_default_handler()
         transformers.utils.logging.enable_explicit_format()
     logger.info(f"Training/evaluation parameters {training_args}")
 
-    # Set seed before initializing model.
     set_seed(training_args.seed)
 
+    # ------------------------------------------------------------ dataset
     if data_args.dataset_name == 'funsd':
-        # datasets = load_dataset("nielsr/funsd")
-        import layoutlmft.data.funsd
-        datasets = load_dataset(os.path.abspath(layoutlmft.data.funsd.__file__), cache_dir=model_args.cache_dir)
+        import layoutlmft.data.funsd as ds_module
     elif data_args.dataset_name == 'cord':
-        import layoutlmft.data.cord
-        datasets = load_dataset(os.path.abspath(layoutlmft.data.cord.__file__), cache_dir=model_args.cache_dir)
+        import layoutlmft.data.cord as ds_module
     else:
         raise NotImplementedError()
+    datasets = load_dataset(os.path.abspath(ds_module.__file__), name=data_args.dataset_config_name,
+                            cache_dir=model_args.cache_dir)
 
-    if training_args.do_train:
-        column_names = datasets["train"].column_names
-        features = datasets["train"].features
-    else:
-        column_names = datasets["test"].column_names
-        features = datasets["test"].features
+    # NEW: tách dev cố định (không bao giờ chọn mô hình trên test)
+    dev_raw = None
+    if training_args.do_eval:
+        if "validation" in datasets:
+            dev_raw = datasets["validation"]
+        elif data_args.dev_ratio > 0:
+            split = datasets["train"].train_test_split(test_size=data_args.dev_ratio, seed=data_args.dev_split_seed)
+            datasets["train"], dev_raw = split["train"], split["test"]
+        else:
+            raise ValueError("--do_eval cần tập dev: đặt --dev_ratio > 0 (KHÔNG đánh giá chọn mô hình trên test).")
 
+    split_for_meta = "train" if training_args.do_train else "test"
+    column_names = datasets[split_for_meta].column_names
+    features = datasets[split_for_meta].features
     text_column_name = "words" if "words" in column_names else "tokens"
-
     label_column_name = (
         f"{data_args.task_name}_tags" if f"{data_args.task_name}_tags" in column_names else column_names[1]
     )
-
     remove_columns = column_names
-
-    # In the event the labels are not a `Sequence[ClassLabel]`, we will need to go through the dataset to get the
-    # unique labels.
-    def get_label_list(labels):
-        unique_labels = set()
-        for label in labels:
-            unique_labels = unique_labels | set(label)
-        label_list = list(unique_labels)
-        label_list.sort()
-        return label_list
 
     if isinstance(features[label_column_name].feature, ClassLabel):
         label_list = features[label_column_name].feature.names
-        # No need to convert the labels since they are already ints.
         label_to_id = {i: i for i in range(len(label_list))}
     else:
-        label_list = get_label_list(datasets["train"][label_column_name])
+        unique = set()
+        for l in datasets["train"][label_column_name]:
+            unique |= set(l)
+        label_list = sorted(unique)
         label_to_id = {l: i for i, l in enumerate(label_list)}
     num_labels = len(label_list)
 
-    # Load pretrained model and tokenizer
-    #
-    # Distributed training:
-    # The .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
+    # ------------------------------------------------------------ model
     config = AutoConfig.from_pretrained(
         model_args.config_name if model_args.config_name else model_args.model_name_or_path,
         num_labels=num_labels,
@@ -265,205 +166,133 @@ def main():
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
         input_size=data_args.input_size,
+        visual_embed=data_args.visual_embed,
         use_auth_token=True if model_args.use_auth_token else None,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
-        tokenizer_file=None,  # avoid loading from a cached file of the pre-trained model in another machine
+        tokenizer_file=None,
         cache_dir=model_args.cache_dir,
         use_fast=True,
         add_prefix_space=True,
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    if getattr(data_args, "use_segment_head", False):
-        # NEW: segment-level pooling + inter-segment context head.
-        # See modeling_layoutlmv3_segment.py for the full design rationale.
+    model_kwargs = dict(
+        from_tf=bool(".ckpt" in model_args.model_name_or_path),
+        config=config,
+        cache_dir=model_args.cache_dir,
+        revision=model_args.model_revision,
+        use_auth_token=True if model_args.use_auth_token else None,
+    )
+    if data_args.use_latent_segment:
         from layoutlmft.models.layoutlmv3.modeling_layoutlmv3_segment import (
-    LayoutLMv3ForSegmentTokenClassification,
-)
-        model = LayoutLMv3ForSegmentTokenClassification.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
+            LayoutLMv3ForLatentSegmentTokenClassification,
         )
+        config.latent_layer = data_args.latent_layer
+        config.latent_soft_box = data_args.latent_soft_box
+        config.latent_attn_bias = data_args.latent_attn_bias
+        config.latent_oracle_eval = data_args.latent_oracle_eval
+        config.affinity_loss_weight = data_args.affinity_loss_weight
+        model = LayoutLMv3ForLatentSegmentTokenClassification.from_pretrained(
+            model_args.model_name_or_path, **model_kwargs)
     else:
-        model = AutoModelForTokenClassification.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
+        model = AutoModelForTokenClassification.from_pretrained(model_args.model_name_or_path, **model_kwargs)
 
-    # Tokenizer check: this script requires a fast tokenizer.
     if not isinstance(tokenizer, PreTrainedTokenizerFast):
-        raise ValueError(
-            "This example script only works for models that have a fast tokenizer. Checkout the big table of models "
-            "at https://huggingface.co/transformers/index.html#bigtable to find the model types that meet this "
-            "requirement"
-        )
+        raise ValueError("This example script only works for models that have a fast tokenizer.")
 
-    # Preprocessing the dataset
-    # Padding strategy
     padding = "max_length" if data_args.pad_to_max_length else False
 
     if data_args.visual_embed:
-        imagenet_default_mean_and_std = data_args.imagenet_default_mean_and_std
-        mean = IMAGENET_INCEPTION_MEAN if not imagenet_default_mean_and_std else IMAGENET_DEFAULT_MEAN
-        std = IMAGENET_INCEPTION_STD if not imagenet_default_mean_and_std else IMAGENET_DEFAULT_STD
+        mean = IMAGENET_INCEPTION_MEAN if not data_args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_MEAN
+        std = IMAGENET_INCEPTION_STD if not data_args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_STD
         common_transform = Compose([
-            # transforms.ColorJitter(0.4, 0.4, 0.4),
-            # transforms.RandomHorizontalFlip(p=0.5),
             RandomResizedCropAndInterpolationWithTwoPic(
                 size=data_args.input_size, interpolation=data_args.train_interpolation),
         ])
-        import torch
         patch_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=torch.tensor(mean),
-                std=torch.tensor(std))
+            transforms.Normalize(mean=torch.tensor(mean), std=torch.tensor(std)),
         ])
 
-    # Tokenize all texts and align the labels with them.
+    # ------------------------------------------------------------ tokenize
     def tokenize_and_align_labels(examples, augmentation=False):
         tokenized_inputs = tokenizer(
             examples[text_column_name],
             padding=False,
             truncation=True,
-            return_overflowing_tokens=True,
-            # We use this argument because the texts in our dataset are lists of words (with a label for each word).
+            return_overflowing_tokens=True,  # tài liệu > 512 token bị cắt thành nhiều đoạn KHÔNG chồng lấn
             is_split_into_words=True,
         )
-
-        labels = []
-        bboxes = []
-        images = []
-        seg_ids = []  # NEW: per-token local segment index, for LayoutLMv3ForSegmentTokenClassification
+        labels, bboxes, images, group_ids, doc_ids, word_idxs = [], [], [], [], [], []
         for batch_index in range(len(tokenized_inputs["input_ids"])):
             word_ids = tokenized_inputs.word_ids(batch_index=batch_index)
-            org_batch_index = tokenized_inputs["overflow_to_sample_mapping"][batch_index]
+            org = tokenized_inputs["overflow_to_sample_mapping"][batch_index]
+            label = examples[label_column_name][org]
+            bbox = examples["bboxes"][org]
 
-            label = examples[label_column_name][org_batch_index]
-            bbox = examples["bboxes"][org_batch_index]
-
-            # NEW: recover the original FUNSD/CORD "item" (= segment) boundaries.
-            # funsd.py/cord.py assign an IDENTICAL line-level bbox to every word
-            # belonging to the same item, so grouping consecutive words with the
-            # same bbox tuple exactly reconstructs the gold segment groups --
-            # same trick used in the error-analysis script, no extra annotation
-            # needed.
-            # Only computed when --use_segment_head is set, so the baseline
-            # (vanilla LayoutLMv3ForTokenClassification, which has no `seg_id`
-            # argument in its forward()) never receives this extra batch key.
-            word_seg_id = None
-            if getattr(data_args, "use_segment_head", False):
-                word_seg_id = []
-                seg_counter = -1
-                prev_bbox_tuple = None
+            # id nhóm gold cho từng từ (chỉ dùng làm nhãn lúc train). Nếu dataset chưa có cột
+            # group_ids (vd. cord.py chưa sửa) thì suy ra từ box bằng nhau như code cũ.
+            if "group_ids" in examples:
+                word_gid = examples["group_ids"][org]
+            else:
+                word_gid, c, prev = [], -1, None
                 for wb in bbox:
-                    wb_tuple = tuple(wb)
-                    if wb_tuple != prev_bbox_tuple:
-                        seg_counter += 1
-                        prev_bbox_tuple = wb_tuple
-                    word_seg_id.append(seg_counter)
+                    if tuple(wb) != prev:
+                        c, prev = c + 1, tuple(wb)
+                    word_gid.append(c)
 
             previous_word_idx = None
-            label_ids = []
-            bbox_inputs = []
-            seg_id_inputs = []  # NEW
+            label_ids, bbox_inputs, gid_inputs, widx_inputs = [], [], [], []
             for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
                 if word_idx is None:
                     label_ids.append(-100)
                     bbox_inputs.append([0, 0, 0, 0])
-                    if word_seg_id is not None:
-                        seg_id_inputs.append(-1)  # NEW: not part of any segment
-                # We set the label for the first token of each word.
+                    gid_inputs.append(-1)
+                    widx_inputs.append(-1)
                 elif word_idx != previous_word_idx:
                     label_ids.append(label_to_id[label[word_idx]])
                     bbox_inputs.append(bbox[word_idx])
-                    if word_seg_id is not None:
-                        seg_id_inputs.append(word_seg_id[word_idx])  # NEW
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
+                    gid_inputs.append(word_gid[word_idx])
+                    widx_inputs.append(word_idx)          # sub-token ĐẦU của từ -> dùng để chấm điểm
                 else:
                     label_ids.append(label_to_id[label[word_idx]] if data_args.label_all_tokens else -100)
                     bbox_inputs.append(bbox[word_idx])
-                    if word_seg_id is not None:
-                        seg_id_inputs.append(word_seg_id[word_idx])  # NEW
+                    gid_inputs.append(word_gid[word_idx])
+                    widx_inputs.append(-1)
                 previous_word_idx = word_idx
             labels.append(label_ids)
             bboxes.append(bbox_inputs)
-            if word_seg_id is not None:
-                seg_ids.append(seg_id_inputs)  # NEW
+            group_ids.append(gid_inputs)
+            doc_ids.append(examples["id"][org])
+            word_idxs.append(widx_inputs)
 
             if data_args.visual_embed:
-                ipath = examples["image_path"][org_batch_index]
-                img = pil_loader(ipath)
+                img = pil_loader(examples["image_path"][org])
                 for_patches, _ = common_transform(img, augmentation=augmentation)
-                patch = patch_transform(for_patches)
-                images.append(patch)
+                images.append(patch_transform(for_patches))
 
         tokenized_inputs["labels"] = labels
         tokenized_inputs["bbox"] = bboxes
-        if getattr(data_args, "use_segment_head", False):
-            tokenized_inputs["seg_id"] = seg_ids  # NEW
+        tokenized_inputs["group_ids"] = group_ids   # Trainer tự bỏ cột này nếu forward() không nhận
+        tokenized_inputs["doc_id"] = doc_ids        # chỉ dùng để chấm điểm cấp tài liệu (Trainer tự bỏ)
+        tokenized_inputs["word_idx"] = word_idxs    # chỉ dùng để chấm điểm (Trainer tự bỏ)
         if data_args.visual_embed:
             tokenized_inputs["images"] = images
-
         return tokenized_inputs
 
-    if training_args.do_train:
-        if "train" not in datasets:
-            raise ValueError("--do_train requires a train dataset")
-        train_dataset = datasets["train"]
-        if data_args.max_train_samples is not None:
-            train_dataset = train_dataset.select(range(data_args.max_train_samples))
-        train_dataset = train_dataset.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=remove_columns,
-            num_proc=data_args.preprocessing_num_workers,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
+    def prep(ds, max_n):
+        if max_n is not None:
+            ds = ds.select(range(max_n))
+        return ds.map(tokenize_and_align_labels, batched=True, remove_columns=remove_columns,
+                      num_proc=data_args.preprocessing_num_workers,
+                      load_from_cache_file=not data_args.overwrite_cache)
 
-    if training_args.do_eval:
-        validation_name = "test"
-        if validation_name not in datasets:
-            raise ValueError("--do_eval requires a validation dataset")
-        eval_dataset = datasets[validation_name]
-        if data_args.max_val_samples is not None:
-            eval_dataset = eval_dataset.select(range(data_args.max_val_samples))
-        eval_dataset = eval_dataset.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=remove_columns,
-            num_proc=data_args.preprocessing_num_workers,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
+    train_dataset = prep(datasets["train"], data_args.max_train_samples) if training_args.do_train else None
+    eval_dataset = prep(dev_raw, data_args.max_val_samples) if training_args.do_eval else None
+    test_dataset = prep(datasets["test"], data_args.max_test_samples) if training_args.do_predict else None
 
-    if training_args.do_predict:
-        if "test" not in datasets:
-            raise ValueError("--do_predict requires a test dataset")
-        test_dataset = datasets["test"]
-        if data_args.max_test_samples is not None:
-            test_dataset = test_dataset.select(range(data_args.max_test_samples))
-        test_dataset = test_dataset.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=remove_columns,
-            num_proc=data_args.preprocessing_num_workers,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
-
-    # Data collator
     data_collator = DataCollatorForKeyValueExtraction(
         tokenizer,
         pad_to_multiple_of=8 if training_args.fp16 else None,
@@ -471,138 +300,113 @@ def main():
         max_length=512,
     )
 
-    # Metrics
+    # ------------------------------------------------------------ METRIC (chốt 1 cách)
+    # seqeval entity-level micro P/R/F1, sơ đồ IOB2, chế độ mặc định (giống LayoutLMv3 gốc),
+    # chấm trên sub-token ĐẦU của mỗi từ, GỘP các đoạn 512 về NGUYÊN TÀI LIỆU, mỗi từ đúng 1 lần.
     metric = evaluate.load("seqeval")
 
-    def compute_metrics(p):
-        predictions, labels = p
+    def doc_level_sequences(predictions, label_ids, ds):
         predictions = np.argmax(predictions, axis=2)
+        doc_ids, word_idx = ds["doc_id"], ds["word_idx"]
+        docs, order = {}, []
+        for i in range(len(predictions)):
+            d = doc_ids[i]
+            if d not in docs:
+                docs[d] = {}
+                order.append(d)
+            seen = docs[d]
+            for j, w in enumerate(word_idx[i]):
+                if w < 0 or label_ids[i][j] == -100 or w in seen:
+                    continue
+                seen[w] = (label_list[predictions[i][j]], label_list[label_ids[i][j]])
+        y_pred, y_true = [], []
+        for d in order:
+            items = sorted(docs[d].items())
+            y_pred.append([p for _, (p, _) in items])
+            y_true.append([g for _, (_, g) in items])
+        return order, y_pred, y_true
 
-        # Remove ignored index (special tokens)
-        true_predictions = [
-            [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
-            for prediction, label in zip(predictions, labels)
-        ]
-        true_labels = [
-            [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
-            for prediction, label in zip(predictions, labels)
-        ]
+    def make_compute_metrics(ds):
+        def compute_metrics(p):
+            _, y_pred, y_true = doc_level_sequences(p.predictions, p.label_ids, ds)
+            results = metric.compute(predictions=y_pred, references=y_true)
+            out = {"precision": results["overall_precision"], "recall": results["overall_recall"],
+                   "f1": results["overall_f1"], "accuracy": results["overall_accuracy"]}
+            if data_args.return_entity_level_metrics:
+                for key, value in results.items():
+                    if isinstance(value, dict):
+                        for n, v in value.items():
+                            out[f"{key}_{n}"] = v
+            return out
+        return compute_metrics
 
-        results = metric.compute(predictions=true_predictions, references=true_labels)
-        if data_args.return_entity_level_metrics:
-            # Unpack nested dictionaries
-            final_results = {}
-            for key, value in results.items():
-                if isinstance(value, dict):
-                    for n, v in value.items():
-                        final_results[f"{key}_{n}"] = v
-                else:
-                    final_results[key] = value
-            return final_results
-        else:
-            return {
-                "precision": results["overall_precision"],
-                "recall": results["overall_recall"],
-                "f1": results["overall_f1"],
-                "accuracy": results["overall_accuracy"],
-            }
-    import torch
-    # Định nghĩa Trainer tùy chỉnh để tách biệt Learning Rate
-    class CustomTrainer(Trainer):
+    # ------------------------------------------------------------ trainer
+    class LatentTrainer(Trainer):
+        """LR riêng cho module latent_*; cập nhật xác suất teacher forcing theo bước."""
+
         def create_optimizer(self):
             if self.optimizer is None:
-                # Nhóm 1: Các tham số thuộc backbone LayoutLMv3
-                backbone_params = [p for n, p in self.model.named_parameters() if "layoutlmv3" in n and p.requires_grad]
-                # Nhóm 2: Các tham số mới (segment_context, classifier, is_first_token_embedding, gate)
-                new_params = [p for n, p in self.model.named_parameters() if "layoutlmv3" not in n and p.requires_grad]
-
-                optimizer_grouped_parameters = [
-                    {"params": backbone_params, "lr": self.args.learning_rate}, # Dùng LR từ tham số truyền vào (VD: 1e-5)
-                    {"params": new_params, "lr":5e-4} # Ép cứng LR lớn hơn cho module mới
-                ]
-                
+                base, head = [], []
+                for n, p in self.model.named_parameters():
+                    if p.requires_grad:
+                        (head if n.startswith("latent_") else base).append(p)
                 self.optimizer = torch.optim.AdamW(
-                    optimizer_grouped_parameters, 
+                    [{"params": base, "lr": self.args.learning_rate, "weight_decay": self.args.weight_decay},
+                     {"params": head, "lr": data_args.head_learning_rate, "weight_decay": 0.0}],
                     betas=(self.args.adam_beta1, self.args.adam_beta2),
                     eps=self.args.adam_epsilon,
                 )
             return self.optimizer
 
-    # Khởi tạo Trainer bằng CustomTrainer vừa tạo thay vì Trainer mặc định
-    trainer = CustomTrainer(
+        def training_step(self, model, inputs, *args, **kwargs):
+            r = data_args.latent_tf_ratio
+            total = max(1, self.state.max_steps)
+            tf = max(0.0, 1.0 - self.state.global_step / (r * total)) if r > 0 else 0.0
+            self.model.latent_tf_prob = tf
+            return super().training_step(model, inputs, *args, **kwargs)
+
+    TrainerCls = LatentTrainer if data_args.use_latent_segment else Trainer  # baseline = Trainer gốc
+    trainer = TrainerCls(
         model=model,
         args=training_args,
-        train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_metrics,
+        compute_metrics=make_compute_metrics(eval_dataset) if eval_dataset is not None else None,
     )
-    # Initialize our Trainer
-    # trainer = Trainer(
-    #     model=model,
-    #     args=training_args,
-    #     train_dataset=train_dataset if training_args.do_train else None,
-    #     eval_dataset=eval_dataset if training_args.do_eval else None,
-    #     tokenizer=tokenizer,
-    #     data_collator=data_collator,
-    #     compute_metrics=compute_metrics,
-    # )
 
-    # Training
     if training_args.do_train:
-        checkpoint = last_checkpoint if last_checkpoint else None
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
+        trainer.save_model()
         metrics = train_result.metrics
-        trainer.save_model()  # Saves the tokenizer too for easy upload
-
-        max_train_samples = (
-            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
-        )
-        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
-
+        metrics["train_samples"] = len(train_dataset)
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    # Evaluation
     if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-
+        logger.info("*** Evaluate on DEV ***")
         metrics = trainer.evaluate()
-
-        max_val_samples = data_args.max_val_samples if data_args.max_val_samples is not None else len(eval_dataset)
-        metrics["eval_samples"] = min(max_val_samples, len(eval_dataset))
-
+        metrics["eval_samples"] = len(eval_dataset)
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
-    # Predict
     if training_args.do_predict:
-        logger.info("*** Predict ***")
-
-        predictions, labels, metrics = trainer.predict(test_dataset)
-        predictions = np.argmax(predictions, axis=2)
-
-        # Remove ignored index (special tokens)
-        true_predictions = [
-            [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
-            for prediction, label in zip(predictions, labels)
-        ]
-
+        logger.info("*** Predict on TEST (checkpoint cuối, số bước cố định) ***")
+        trainer.compute_metrics = make_compute_metrics(test_dataset)
+        predictions, label_ids, metrics = trainer.predict(test_dataset)
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)
 
-        # Save predictions
-        output_test_predictions_file = os.path.join(training_args.output_dir, "test_predictions.txt")
+        order, y_pred, y_true = doc_level_sequences(predictions, label_ids, test_dataset)
         if trainer.is_world_process_zero():
-            with open(output_test_predictions_file, "w") as writer:
-                for prediction in true_predictions:
-                    writer.write(" ".join(prediction) + "\n")
+            with open(os.path.join(training_args.output_dir, "test_predictions.jsonl"), "w") as w:
+                for d, yp, yt in zip(order, y_pred, y_true):
+                    w.write(json.dumps({"doc_id": d, "pred": yp, "gold": yt}) + "\n")
 
 
 def _mp_fn(index):
-    # For xla_spawn (TPUs)
     main()
 
 
