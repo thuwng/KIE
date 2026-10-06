@@ -73,8 +73,30 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
 
         # Xác suất teacher forcing, Trainer cập nhật mỗi bước (không phải tham số).
         self.latent_tf_prob = 0.0
+        # Bộ đếm để LOG (không phải tham số, không ảnh hưởng tính toán): ce/aff loss, tỉ lệ teacher forcing,
+        # và chất lượng gom nhóm pairwise (A>0.5 so với nhóm gold) lúc eval/test.
+        self._stats = {}
 
         self.init_weights()
+
+    # ------------------------------------------------------------------ log helpers
+    def _acc(self, key, value, n=1.0):
+        s = self._stats.setdefault(key, [0.0, 0.0])
+        s[0] += float(value)
+        s[1] += n
+
+    def pop_latent_stats(self, prefix=""):
+        """Trả về trung bình các đại lượng đã cộng dồn kể từ lần pop trước, rồi xoá bộ đếm."""
+        st, self._stats = self._stats, {}
+        out = {prefix + k: s / n for k, (s, n) in st.items() if not k.startswith("pair_") and n > 0}
+        tp, fp, fn = (st.get(k, (0.0, 0.0))[0] for k in ("pair_tp", "pair_fp", "pair_fn"))
+        if tp + fp + fn > 0:
+            p = tp / (tp + fp) if tp + fp else 0.0
+            r = tp / (tp + fn) if tp + fn else 0.0
+            out[prefix + "group_pair_precision"] = p
+            out[prefix + "group_pair_recall"] = r
+            out[prefix + "group_pair_f1"] = 2 * p * r / (p + r) if p + r else 0.0
+        return out
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -213,12 +235,24 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
             l_neg = (bce * neg).sum() / neg.sum().clamp(min=1)
             aff_loss = 0.5 * (l_pos + l_neg)                                  # BCE cân bằng dương/âm
 
+        # LOG chất lượng gom nhóm lúc eval/test: cặp TỪ (sub-token đầu) trong cùng đoạn 512, ngưỡng 0.5.
+        # Chỉ ĐO, không đưa vào dự đoán -> không rò rỉ nhãn.
+        if (not self.training) and G is not None:
+            with torch.no_grad():
+                wmask = valid if labels is None else valid & (labels[:, :T] != -100)
+                pm = wmask[:, :, None] & wmask[:, None, :] & ~eye
+                pa = A > 0.5
+                self._acc("pair_tp", (pa & G & pm).sum().item(), 0.0)
+                self._acc("pair_fp", (pa & ~G & pm).sum().item(), 0.0)
+                self._acc("pair_fn", (~pa & G & pm).sum().item(), 0.0)
+
         # Scheduled sampling (train) hoặc oracle (eval, chỉ để đo cận trên)
         A_used = A
         if G is not None:
             use_gold = None
             if self.training and self.latent_tf_prob > 0:
                 use_gold = torch.rand(B, device=device) < self.latent_tf_prob
+                self._acc("tf_used_frac", use_gold.float().mean().item())
             elif (not self.training) and self.oracle_eval:
                 use_gold = torch.ones(B, dtype=torch.bool, device=device)
             if use_gold is not None:
@@ -266,7 +300,10 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
                 active_loss, labels.view(-1), torch.tensor(loss_fct.ignore_index).type_as(labels)
             )
             loss = loss_fct(logits.view(-1, self.num_labels), active_labels)
+            if self.training:
+                self._acc("ce_loss", loss.item())
             if aff_loss is not None:
+                self._acc("aff_loss", aff_loss.item())
                 loss = loss + self.aff_weight * aff_loss
 
         if not return_dict:
