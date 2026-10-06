@@ -595,6 +595,7 @@ class LayoutLMv3Encoder(nn.Module):
         Hp=None,
         Wp=None,
         valid_span=None,
+        max_layers=None,
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -903,6 +904,7 @@ class LayoutLMv3Model(LayoutLMv3PreTrainedModel):
                 token_type_ids=token_type_ids,
                 inputs_embeds=inputs_embeds,
                 past_key_values_length=past_key_values_length,
+                spatial_position_embeddings=spatial_position_embeddings,
             )
 
         final_bbox = final_position_ids = None
