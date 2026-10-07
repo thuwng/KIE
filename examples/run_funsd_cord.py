@@ -721,7 +721,7 @@ def main():
                 elif any(k.startswith("eval_") for k in logs):       # log đánh giá dev
                     logs.update(m.pop_latent_stats("eval_"))
             if torch.cuda.is_available():
-                logs["gpu_mem_gb"] = gpu_mem_gb()
+                logs["gpu_peak_gb"] = gpu_mem_gb()
             super().log(logs, *args, **kwargs)
 
     trainer = KIETrainer(
@@ -745,7 +745,7 @@ def main():
         trainer.save_model()
         metrics = train_result.metrics
         metrics["train_samples"] = len(train_dataset)
-        metrics["train_gpu_mem_gb"] = gpu_mem_gb()
+        metrics["train_gpu_peak_gb"] = gpu_mem_gb()
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
@@ -768,7 +768,7 @@ def main():
         predictions, label_ids, metrics = trainer.predict(test_dataset)
         if hasattr(model, "pop_latent_stats"):
             metrics.update(model.pop_latent_stats("test_"))          # test_group_pair_precision/recall/f1
-        metrics["test_gpu_mem_gb"] = gpu_mem_gb()
+        metrics["test_gpu_peak_gb"] = gpu_mem_gb()
         metrics["test_samples"] = len(test_dataset)
 
         order, y_pred, y_true, widx = doc_level_sequences(predictions, label_ids, test_dataset)
