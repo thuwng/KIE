@@ -37,7 +37,6 @@ from typing import Optional
 
 import numpy as np
 from datasets import ClassLabel, load_dataset
-import evaluate
 import transformers
 import torch
 from layoutlmft.data import DataCollatorForKeyValueExtraction
@@ -146,6 +145,22 @@ def environment_info():
     except Exception:
         info["git_commit"] = None
     return info
+
+
+def seqeval_compute(y_pred, y_true):
+    """Tính y hệt metric "seqeval" của HF datasets/evaluate (mode mặc định, IOB2), nhưng gọi thẳng
+    thư viện seqeval -> không cần cài `evaluate`, không cần tải script metric từ Hub."""
+    from seqeval.metrics import accuracy_score, classification_report
+    report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+    report.pop("macro avg", None)
+    report.pop("weighted avg", None)
+    overall = report.pop("micro avg")
+    # ép về float/int Python: np.int64 làm json.dump (save_metrics) báo lỗi
+    out = {t: {"precision": float(v["precision"]), "recall": float(v["recall"]), "f1": float(v["f1-score"]),
+               "number": int(v["support"])} for t, v in report.items()}
+    out.update(overall_precision=float(overall["precision"]), overall_recall=float(overall["recall"]),
+               overall_f1=float(overall["f1-score"]), overall_accuracy=float(accuracy_score(y_true, y_pred)))
+    return out
 
 
 def gpu_mem_gb():
@@ -396,7 +411,8 @@ def main():
         fh = logging.FileHandler(os.path.join(out_dir, "train.log"), mode="w", encoding="utf-8")
         fh.setFormatter(logging.Formatter(fmt, datefmt="%m/%d/%Y %H:%M:%S"))
         logging.getLogger().addHandler(fh)                  # logger của script (propagate lên root)
-        transformers.utils.logging.add_handler(fh)          # logger của transformers
+        if hasattr(transformers.utils.logging, "add_handler"):   # bản transformers cũ không có hàm này
+            transformers.utils.logging.add_handler(fh)          # logger của transformers
         dump_json({"env": environment_info(),
                    "model_args": dataclasses.asdict(model_args),
                    "data_args": dataclasses.asdict(data_args),
@@ -628,7 +644,6 @@ def main():
     # ------------------------------------------------------------ METRIC (chốt 1 cách)
     # seqeval entity-level micro P/R/F1, sơ đồ IOB2, chế độ mặc định (giống LayoutLMv3 gốc),
     # chấm trên sub-token ĐẦU của mỗi từ, GỘP các đoạn 512 về NGUYÊN TÀI LIỆU, mỗi từ đúng 1 lần.
-    metric = evaluate.load("seqeval")
 
     def doc_level_sequences(predictions, label_ids, ds):
         predictions = np.argmax(predictions, axis=2)
@@ -655,7 +670,7 @@ def main():
     def make_compute_metrics(ds):
         def compute_metrics(p):
             _, y_pred, y_true, _ = doc_level_sequences(p.predictions, p.label_ids, ds)
-            results = metric.compute(predictions=y_pred, references=y_true)
+            results = seqeval_compute(y_pred, y_true)
             out = {"precision": results["overall_precision"], "recall": results["overall_recall"],
                    "f1": results["overall_f1"], "accuracy": results["overall_accuracy"]}
             if data_args.return_entity_level_metrics:
