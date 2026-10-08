@@ -63,6 +63,10 @@ fi
 
 for SEED in "${SEEDS[@]}"; do
   OUT_DIR="./logs/${TAG}-seed${SEED}"
+  # Seed đã có kết quả thì bỏ qua (đặt RERUN=1 để chạy lại tất cả)
+  if [ "${RERUN:-0}" != "1" ] && { [ -f "$OUT_DIR/eval_results.json" ] || [ -f "$OUT_DIR/test_results.json" ]; }; then
+    echo "=== ${TAG} | seed ${SEED}: đã có kết quả, bỏ qua ==="; continue
+  fi
   mkdir -p "$OUT_DIR"
 
   RUN_FLAGS="$PROTO_FLAGS --model_name_or_path $MODEL_PATH"
