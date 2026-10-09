@@ -440,10 +440,21 @@ def main():
         if "validation" in datasets:
             dev_raw = datasets["validation"]
         elif data_args.dev_ratio > 0:
-            split = datasets["train"].train_test_split(test_size=data_args.dev_ratio, seed=data_args.dev_split_seed)
+            # Tách trong bộ nhớ, KHÔNG đọc/ghi cache của HF datasets (tránh dùng nhầm file chỉ số cũ)
+            split = datasets["train"].train_test_split(test_size=data_args.dev_ratio, seed=data_args.dev_split_seed,
+                                                       load_from_cache_file=False, keep_in_memory=True)
             datasets["train"], dev_raw = split["train"], split["test"]
         else:
             raise ValueError("--do_eval cần tập dev: đặt --dev_ratio > 0 (KHÔNG đánh giá chọn mô hình trên test).")
+        # Chốt chặn: dev phải rời hẳn test và (với tách từ train) phải nằm trong train gốc
+        dev_imgs = set(dev_raw["image_path"])
+        test_imgs = set(datasets["test"]["image_path"]) if "test" in datasets else set()
+        if dev_imgs & test_imgs:
+            raise RuntimeError(f"DEV TRÙNG TEST ({len(dev_imgs & test_imgs)} tài liệu) - dừng để tránh rò rỉ test!")
+        if "validation" not in datasets and data_args.dataset_name == "funsd" and \
+                not all("training_data" in p for p in dev_imgs):
+            raise RuntimeError("Dev có tài liệu không thuộc training_data của FUNSD - dừng!")
+        logger.info(f"DEV: {len(dev_imgs)} tài liệu: {sorted(os.path.basename(p) for p in dev_imgs)}")
 
     split_for_meta = "train" if training_args.do_train else "test"
     column_names = datasets[split_for_meta].column_names
@@ -600,9 +611,16 @@ def main():
     def prep(ds, max_n):
         if max_n is not None:
             ds = ds.select(range(max_n))
-        return ds.map(tokenize_and_align_labels, batched=True, remove_columns=remove_columns,
-                      num_proc=data_args.preprocessing_num_workers,
-                      load_from_cache_file=not data_args.overwrite_cache)
+        n_docs = len(ds)
+        # KHÔNG dùng cache của .map(): hàm tokenize không hash được nên datasets sinh fingerprint
+        # "ngẫu nhiên" từ RNG đã bị set_seed cố định -> cùng seed sẽ nạp nhầm cache của lượt chạy
+        # trước (vd. smoke 4 tài liệu). Tính lại mỗi lần (chỉ mất vài chục giây).
+        out = ds.map(tokenize_and_align_labels, batched=True, remove_columns=remove_columns,
+                     num_proc=data_args.preprocessing_num_workers, load_from_cache_file=False)
+        n_out = len(set(out["doc_id"]))
+        if n_out != n_docs:
+            raise RuntimeError(f"Dữ liệu sau tokenize có {n_out} tài liệu, đầu vào có {n_docs} -> cache sai, dừng lại.")
+        return out
 
     train_dataset = prep(datasets["train"], data_args.max_train_samples) if training_args.do_train else None
     eval_dataset = prep(dev_raw, data_args.max_val_samples) if training_args.do_eval else None
@@ -619,7 +637,8 @@ def main():
             n_words += len(names)
             ent.update(t for t, _, _ in get_entities(names))
         chunks = Counter(tok["doc_id"])
-        return {"docs": len(raw), "words": n_words, "chunks_512": len(tok),
+        folders = Counter(os.path.basename(os.path.dirname(os.path.dirname(p))) for p in raw["image_path"])
+        return {"docs": len(raw), "source_folders": dict(folders), "words": n_words, "chunks_512": len(tok),
                 "docs_over_512_tokens": sum(1 for v in chunks.values() if v > 1),
                 "entities": dict(sorted(ent.items())), "entities_total": sum(ent.values())}
 
