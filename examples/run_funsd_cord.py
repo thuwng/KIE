@@ -442,7 +442,7 @@ def main():
         elif data_args.dev_ratio > 0:
             # Tách trong bộ nhớ, KHÔNG đọc/ghi cache của HF datasets (tránh dùng nhầm file chỉ số cũ)
             split = datasets["train"].train_test_split(test_size=data_args.dev_ratio, seed=data_args.dev_split_seed,
-                                                       load_from_cache_file=False, keep_in_memory=True)
+                                           load_from_cache_file=False)
             datasets["train"], dev_raw = split["train"], split["test"]
         else:
             raise ValueError("--do_eval cần tập dev: đặt --dev_ratio > 0 (KHÔNG đánh giá chọn mô hình trên test).")
