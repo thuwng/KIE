@@ -83,7 +83,6 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
 
         has_bbox_input = "bbox" in features[0]
         has_position_input = "position_ids" in features[0]
-        has_seg_id_input = "group_ids" in features[0]  # NEW: for LayoutLMv3ForSegmentTokenClassification
         padding_idx=self.tokenizer.pad_token_id
         sequence_length = torch.tensor(batch["input_ids"]).shape[1]
         padding_side = self.tokenizer.padding_side
@@ -94,10 +93,6 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
             if has_position_input:
                 batch["position_ids"] = [position_id + [padding_idx] * (sequence_length - len(position_id))
                                           for position_id in batch["position_ids"]]
-            if has_seg_id_input:
-                # -1 = "not part of any segment" (padding / special tokens),
-                # must NOT collide with a real segment id (which start at 0).
-                batch["group_ids"] = [seg + [-1] * (sequence_length - len(seg)) for seg in batch["group_ids"]]
 
         else:
             batch["labels"] = [[self.label_pad_token_id] * (sequence_length - len(label)) + label for label in labels]
@@ -106,8 +101,6 @@ class DataCollatorForKeyValueExtraction(DataCollatorMixin):
             if has_position_input:
                 batch["position_ids"] = [[padding_idx] * (sequence_length - len(position_id))
                                           + position_id for position_id in batch["position_ids"]]
-            if has_seg_id_input:
-                batch["group_ids"] = [[-1] * (sequence_length - len(seg)) + seg for seg in batch["group_ids"]]
 
         if 'segment_ids' in batch:
             assert 'position_ids' in batch

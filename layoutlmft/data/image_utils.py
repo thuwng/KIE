@@ -6,8 +6,8 @@ import numpy as np
 from PIL import Image
 import torch
 
-#from detectron2.data.detection_utils import read_image
-#from detectron2.data.transforms import ResizeTransform, TransformList
+from detectron2.data.detection_utils import read_image
+from detectron2.data.transforms import ResizeTransform, TransformList
 
 def normalize_bbox(bbox, size):
     return [
@@ -19,20 +19,12 @@ def normalize_bbox(bbox, size):
 
 
 def load_image(image_path):
-    # Đọc ảnh bằng PIL
-    image = Image.open(image_path).convert("RGB")
-    w, h = image.size
-    
-    # Resize về 224x224 (tương đương với ResizeTransform của detectron2)
-    image = image.resize((224, 224), Image.Resampling.BILINEAR if hasattr(Image, 'Resampling') else Image.BILINEAR)
-    
-    # detectron2 gốc dùng format="BGR", nên ta lật kênh RGB thành BGR
-    img_np = np.array(image)[:, :, ::-1].copy()
-    
-    # Chuyển thành tensor dạng (Channels, Height, Width)
-    image_tensor = torch.tensor(img_np).permute(2, 0, 1)
-    
-    return image_tensor, (w, h)
+    image = read_image(image_path, format="BGR")
+    h = image.shape[0]
+    w = image.shape[1]
+    img_trans = TransformList([ResizeTransform(h=h, w=w, new_h=224, new_w=224)])
+    image = torch.tensor(img_trans.apply_image(image).copy()).permute(2, 0, 1)  # copy to make it writeable
+    return image, (w, h)
 
 
 def crop(image, i, j, h, w, boxes=None):

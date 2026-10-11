@@ -14,7 +14,7 @@
 # limitations under the License.
 """Tokenization classes for LayoutLMv3, refer to RoBERTa."""
 
-from transformers import RobertaTokenizer
+from transformers.models.roberta import RobertaTokenizer
 from transformers.utils import logging
 
 

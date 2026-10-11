@@ -15,8 +15,7 @@
 """Fast Tokenization classes for LayoutLMv3, refer to RoBERTa."""
 
 
-from transformers import RobertaTokenizerFast
-from transformers.models.roberta.tokenization_roberta import VOCAB_FILES_NAMES
+from transformers.models.roberta.tokenization_roberta_fast import RobertaTokenizerFast
 from transformers.utils import logging
 
 from .tokenization_layoutlmv3 import LayoutLMv3Tokenizer
