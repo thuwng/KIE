@@ -60,6 +60,17 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
         self.union_tau = getattr(config, "latent_union_tau", 3.0)       # độ "mềm" của soft-min/max (đơn vị toạ độ 0..1000)
         self.union_penalty = getattr(config, "latent_union_penalty", 1000.0)  # phạt (1-A)*M để loại từ khác nhóm
         d = getattr(config, "latent_affinity_dim", 128)
+        # ---- v2 (mặc định = hành vi v1 cũ, bật từng cái bằng cờ để thử lần lượt) ----
+        # Sửa 1 "tiêm an toàn": giữ box TỪ cho bias 2D tương đối + khởi tạo alpha gần 1 (mô hình = B0 lúc đầu)
+        self.soft_rel2d = getattr(config, "latent_soft_rel2d", True)
+        alpha_init = getattr(config, "latent_alpha_init", -2.0)
+        # Sửa 2 "gom chính xác": BCE thường thay BCE cân bằng, mặt nạ cục bộ, chặn gradient aff vào backbone
+        self.aff_balanced = getattr(config, "latent_aff_balanced", True)
+        self.local_radius = getattr(config, "latent_local_radius", 0.0)   # 0 = tắt; >0: bội số chiều cao từ
+        self.aff_detach = getattr(config, "latent_aff_detach", False)
+        # Sửa 3 "khớp train/test": trộn mềm gold-dự đoán thay vì đổi cả batch, chặn đáy log A
+        self.tf_mode = getattr(config, "latent_tf_mode", "switch")         # switch | mix
+        self.log_floor = getattr(config, "latent_log_floor", 1e-4)
 
         # ---- module mới: TÊN BẮT ĐẦU BẰNG "latent_" để optimizer cho LR riêng ----
         self.latent_q = nn.Linear(H, d)
@@ -67,7 +78,7 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
         self.latent_geo = nn.Sequential(nn.Linear(8, 16), nn.GELU(), nn.Linear(16, 1))
         # a = sigmoid(latent_alpha) là trọng số của box TỪ; khởi tạo -2 -> a~0.12,
         # tức ưu tiên box mềm (gần prior segment lúc pretrain).
-        self.latent_alpha = nn.Parameter(torch.full((1,), -2.0))
+        self.latent_alpha = nn.Parameter(torch.full((1,), float(alpha_init)))
         # lambda theo từng head, khởi tạo 0 -> lúc đầu attention y hệt baseline.
         self.latent_attn_lambda = nn.Parameter(torch.zeros(config.num_attention_heads))
 
@@ -214,10 +225,24 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
         h = out1[0][:, :T, :]
 
         # ---------------- Affinity ----------------
-        q, k = self.latent_q(h), self.latent_k(h)
+        h_aff = h.detach() if self.aff_detach else h          # Sửa 2: không cho loss gom nhóm kéo backbone
+        q, k = self.latent_q(h_aff), self.latent_k(h_aff)
         aff_logits = torch.matmul(q, k.transpose(1, 2)) / math.sqrt(q.shape[-1])
         aff_logits = aff_logits.float() + self.latent_geo(self._pair_geometry(bbox.float())).squeeze(-1).float()
         aff_logits = 0.5 * (aff_logits + aff_logits.transpose(1, 2))          # đối xứng
+        # Sửa 2: mặt nạ cục bộ - hai từ cách xa nhau (theo chiều cao từ trung vị) không thể cùng nhóm
+        local = torch.ones_like(pair_mask)
+        if self.local_radius > 0:
+            bx = bbox.float()
+            hgt = (bx[..., 3] - bx[..., 1]).clamp(min=1.0)
+            hmed = torch.where(valid, hgt, torch.full_like(hgt, float("nan"))).nanmedian(dim=1).values
+            hmed = torch.nan_to_num(hmed, nan=10.0)[:, None, None]
+            vgap = (torch.maximum(bx[..., 1][:, :, None], bx[..., 1][:, None, :])
+                    - torch.minimum(bx[..., 3][:, :, None], bx[..., 3][:, None, :])).clamp(min=0)
+            hgap = (torch.maximum(bx[..., 0][:, :, None], bx[..., 0][:, None, :])
+                    - torch.minimum(bx[..., 2][:, :, None], bx[..., 2][:, None, :])).clamp(min=0)
+            local = (vgap <= self.local_radius * hmed) & (hgap <= 4.0 * self.local_radius * hmed)
+            aff_logits = aff_logits.masked_fill(~local, -20.0)
         A = torch.sigmoid(aff_logits)
         A = torch.where(eye, torch.ones_like(A), A) * pair_mask.float()
 
@@ -228,12 +253,15 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
 
         aff_loss = None
         if self.training and G is not None and self.aff_weight > 0:
-            off = pair_mask & ~eye
+            off = pair_mask & ~eye & local                 # cặp bị mặt nạ cục bộ loại thì không tính loss
             pos, neg = off & G, off & ~G
             bce = F.binary_cross_entropy_with_logits(aff_logits, G.float(), reduction="none")
-            l_pos = (bce * pos).sum() / pos.sum().clamp(min=1)
-            l_neg = (bce * neg).sum() / neg.sum().clamp(min=1)
-            aff_loss = 0.5 * (l_pos + l_neg)                                  # BCE cân bằng dương/âm
+            if self.aff_balanced:                          # v1: cân bằng -> nghiêng về gộp (recall cao, precision thấp)
+                l_pos = (bce * pos).sum() / pos.sum().clamp(min=1)
+                l_neg = (bce * neg).sum() / neg.sum().clamp(min=1)
+                aff_loss = 0.5 * (l_pos + l_neg)
+            else:                                          # Sửa 2: BCE thường -> xác suất hiệu chỉnh đúng tần suất
+                aff_loss = (bce * off).sum() / off.sum().clamp(min=1)
 
         # LOG chất lượng gom nhóm lúc eval/test: cặp TỪ (sub-token đầu) trong cùng đoạn 512, ngưỡng 0.5.
         # Chỉ ĐO, không đưa vào dự đoán -> không rò rỉ nhãn.
@@ -250,13 +278,18 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
         A_used = A
         if G is not None:
             use_gold = None
-            if self.training and self.latent_tf_prob > 0:
+            Gf = torch.where(eye, torch.ones_like(A), G.float()) * pair_mask.float()
+            if self.training and self.latent_tf_prob > 0 and self.tf_mode == "mix":
+                # Sửa 3: trộn mềm - mọi batch đều thấy một phần nhóm dự đoán, không có bước nhảy gold -> dự đoán
+                p = float(self.latent_tf_prob)
+                A_used = p * Gf + (1.0 - p) * A
+                self._acc("tf_used_frac", p)
+            elif self.training and self.latent_tf_prob > 0:
                 use_gold = torch.rand(B, device=device) < self.latent_tf_prob
                 self._acc("tf_used_frac", use_gold.float().mean().item())
             elif (not self.training) and self.oracle_eval:
                 use_gold = torch.ones(B, dtype=torch.bool, device=device)
             if use_gold is not None:
-                Gf = torch.where(eye, torch.ones_like(A), G.float()) * pair_mask.float()
                 A_used = torch.where(use_gold[:, None, None], Gf, A)
 
         # ---------------- Box mềm -> embedding 2D ----------------
@@ -269,13 +302,15 @@ class LayoutLMv3ForLatentSegmentTokenClassification(LayoutLMv3PreTrainedModel):
             a = torch.sigmoid(self.latent_alpha)
             spatial = a * spatial_word + (1.0 - a) * self._soft_spatial_embeddings(soft_box)
             # bias 2D tương đối của LayoutLMv3 cần toạ độ nguyên -> dùng box mềm làm tròn (không cần gradient)
-            bbox2 = torch.where(valid[..., None], soft_box.detach().round().long(), bbox)
+            # Sửa 1: latent_soft_rel2d=False giữ box TỪ cho bias 2D tương đối (không xoá hình học cấp từ)
+            if self.soft_rel2d:
+                bbox2 = torch.where(valid[..., None], soft_box.detach().round().long(), bbox)
 
         # ---------------- Bias attention: lambda_h * log A ----------------
         extra_bias = None
         if self.use_attn_bias:
             L_tot = attention_mask.shape[1]                                    # text + ảnh
-            logA = torch.log(A_used.clamp(min=1e-4))
+            logA = torch.log(A_used.clamp(min=self.log_floor))   # Sửa 3: đáy cao hơn -> nhóm gold không "cắt" attention
             logA = torch.where(pair_mask, logA, torch.zeros_like(logA))
             extra_bias = self.latent_attn_lambda.view(1, -1, 1, 1) * logA.unsqueeze(1)   # (B,heads,T,T)
             if L_tot > T:

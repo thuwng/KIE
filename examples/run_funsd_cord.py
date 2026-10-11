@@ -107,6 +107,14 @@ class DataTrainingArguments:
     latent_oracle_eval: bool = field(default=False, metadata={"help": "CẬN TRÊN: dùng nhóm gold lúc test (không phải kết quả chính)"})
     affinity_loss_weight: float = field(default=1.0)
     head_learning_rate: float = field(default=5e-4, metadata={"help": "LR cho các tham số latent_* mới"})
+    # ---- LSS v2: mặc định = v1, bật lần lượt để thử ----
+    latent_soft_rel2d: bool = field(default=True, metadata={"help": "Sửa 1: False = giữ box từ cho bias 2D tương đối"})
+    latent_alpha_init: float = field(default=-2.0, metadata={"help": "Sửa 1: 4.0 = lúc đầu gần như chỉ dùng box từ (=B0)"})
+    latent_aff_balanced: bool = field(default=True, metadata={"help": "Sửa 2: False = BCE thường (bớt gộp quá tay)"})
+    latent_local_radius: float = field(default=0.0, metadata={"help": "Sửa 2: >0 bật mặt nạ cục bộ (vd 1.5)"})
+    latent_aff_detach: bool = field(default=False, metadata={"help": "Sửa 2: True = loss gom nhóm không kéo backbone"})
+    latent_tf_mode: str = field(default="switch", metadata={"help": "Sửa 3: switch (v1) | mix"})
+    latent_log_floor: float = field(default=1e-4, metadata={"help": "Sửa 3: đáy của A trong log A (vd 0.05)"})
     input_size: int = field(default=224)
     second_input_size: int = field(default=112)
     train_interpolation: str = field(default='bicubic')
@@ -440,9 +448,11 @@ def main():
         if "validation" in datasets:
             dev_raw = datasets["validation"]
         elif data_args.dev_ratio > 0:
-            # Tách trong bộ nhớ, KHÔNG đọc/ghi cache của HF datasets (tránh dùng nhầm file chỉ số cũ)
+            # Luôn tính lại chỉ số tách (load_from_cache_file=False). KHÔNG dùng keep_in_memory=True:
+            # bản datasets cũ tự gán indices_cache_file_name -> lỗi "keep_in_memory ... but not both".
+            # Tách theo seed cố định nên file chỉ số ghi đè luôn giống nhau, không có rủi ro dùng nhầm.
             split = datasets["train"].train_test_split(test_size=data_args.dev_ratio, seed=data_args.dev_split_seed,
-                                           load_from_cache_file=False)
+                                                       load_from_cache_file=False)
             datasets["train"], dev_raw = split["train"], split["test"]
         else:
             raise ValueError("--do_eval cần tập dev: đặt --dev_ratio > 0 (KHÔNG đánh giá chọn mô hình trên test).")
@@ -514,6 +524,9 @@ def main():
         config.latent_attn_bias = data_args.latent_attn_bias
         config.latent_oracle_eval = data_args.latent_oracle_eval
         config.affinity_loss_weight = data_args.affinity_loss_weight
+        for _k in ("latent_soft_rel2d", "latent_alpha_init", "latent_aff_balanced", "latent_local_radius",
+                   "latent_aff_detach", "latent_tf_mode", "latent_log_floor"):
+            setattr(config, _k, getattr(data_args, _k))
         model = LayoutLMv3ForLatentSegmentTokenClassification.from_pretrained(
             model_args.model_name_or_path, **model_kwargs)
     else:

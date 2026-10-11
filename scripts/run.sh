@@ -57,7 +57,7 @@ BASE_TAG="funsd-${PROTOCOL}-${SETTING}-${MODEL}"
 BASE_TAG="${BASE_TAG}${EXTRA_TAG}"
 TAG="$BASE_TAG"
 if [ "$ORACLE" = "1" ]; then
-  [ "$MODEL" = "LSS" ] && [ "$PROTOCOL" = "final" ] || { echo "ORACLE chỉ dùng với MODEL=LSS PROTOCOL=final"; exit 1; }
+  [ "$MODEL" = "LSS" ] || { echo "ORACLE chỉ dùng với MODEL=LSS"; exit 1; }
   TAG="${BASE_TAG}-ORACLE"
 fi
 
@@ -71,7 +71,13 @@ for SEED in "${SEEDS[@]}"; do
 
   RUN_FLAGS="$PROTO_FLAGS --model_name_or_path $MODEL_PATH"
   if [ "$ORACLE" = "1" ]; then   # không train lại: nạp checkpoint LSS cùng seed, test với nhóm gold
-    RUN_FLAGS="--do_predict --latent_oracle_eval True --model_name_or_path ./logs/${BASE_TAG}-seed${SEED}"
+    CKPT="./logs/${BASE_TAG}-seed${SEED}"
+    [ -f "$CKPT/config.json" ] || { echo "Thiếu checkpoint $CKPT (chạy bản không ORACLE trước)"; continue; }
+    if [ "$PROTOCOL" = "dev" ]; then      # oracle trên DEV: chẩn đoán mà không đụng test
+      RUN_FLAGS="--do_eval --dev_ratio 0.1 --latent_oracle_eval True --model_name_or_path $CKPT"
+    else
+      RUN_FLAGS="--do_predict --latent_oracle_eval True --model_name_or_path $CKPT"
+    fi
   fi
   VIS=""
   [ "$SEED" = "${SEEDS[0]}" ] && VIS="--visualize True"   # chỉ vẽ ảnh cho seed đầu
